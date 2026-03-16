@@ -1,0 +1,112 @@
+TENSIONCORE COMMUNITY EDITION LICENSE 1.0
+For LLM Controller CE
+
+Copyright © 2026 Tensioncore Administration Services.
+All rights reserved.
+
+This Tensioncore Community Edition License 1.0 (“License”) governs the use, copying, modification, and distribution of the LLM Controller CE software, including its source code, associated files, interface components, and documentation (collectively, the “Software”).
+
+By using, copying, modifying, or distributing the Software, you agree to the terms of this License.
+
+1. Ownership
+
+1.1 The Software is and remains the copyrighted property of Tensioncore Administration Services.
+
+1.2 This License grants limited rights to use, modify, and redistribute the Software only under the terms stated here. No ownership of the Software is transferred.
+
+2. Permitted Use
+
+Subject to this License, you may:
+
+2.1 Use the Software for personal, educational, research, evaluation, and internal business purposes.
+
+2.2 Run and deploy the Software for your own operations, including internal commercial use.
+
+2.3 Use the Software in hosted environments, service workflows, consulting environments, or internal/company-facing deployments, including deployments connected to revenue-generating business activity, provided you are not selling or commercially redistributing the Software itself.
+
+2.4 Modify the Software for your own use.
+
+2.5 Redistribute the Software, in original or modified form, only if all of the following are true:
+(a) the Software itself is not sold, sublicensed, or commercially redistributed;
+(b) this License is included;
+(c) all copyright notices are preserved;
+(d) attribution to Tensioncore Administration Services is preserved; and
+(e) recipients receive the Software under this same License.
+
+3. Attribution Requirements
+
+3.1 Any permitted copy or redistribution of the Software must preserve attribution to Tensioncore Administration Services.
+
+3.2 If the Software includes a user interface, the original authorship attribution must remain visible through the Software’s About modal, About dialog, information modal, “i” button path, or an equivalent attribution location if the interface is modified.
+
+3.3 You may change local instance titles, deployment names, or surrounding branding for your own use, provided such changes do not remove, obscure, or replace the required attribution to Tensioncore Administration Services.
+
+4. Restrictions
+
+You may not, without prior written permission from Tensioncore Administration Services:
+
+4.1 Sell, sublicense, lease, or commercially distribute the Software itself, whether modified or unmodified.
+
+4.2 Repackage, bundle, white-label, or redistribute the Software as part of a paid software product, paid downloadable software distribution, paid software appliance, paid software platform, or similar offering where the Software itself is a material part of what is being sold or licensed.
+
+4.3 Remove, hide, alter, or replace required copyright notices, license notices, or attribution to Tensioncore Administration Services, including the required About modal or equivalent interface attribution path.
+
+4.4 Redistribute the Software under a different license.
+
+4.5 Represent the Software itself as your own original software product in a way that obscures or contradicts its origin from Tensioncore Administration Services.
+
+4.6 Use any trademark, service mark, logo, or branding of Tensioncore Administration Services except as necessary for truthful attribution or with separate written permission.
+
+5. Clarification of Allowed Commercial Activity
+
+5.1 The following are allowed under this License:
+(a) using the Software inside a business;
+(b) using the Software for internal company operations;
+(c) using the Software in consulting or client-service environments;
+(d) hosting the Software for your own workflows or service operations; and
+(e) generating revenue from services, operations, or outputs that rely on the Software.
+
+5.2 The following are not allowed without written permission:
+(a) selling copies of the Software;
+(b) charging for the Software itself as a redistributed product;
+(c) rebranding and selling the Software as your own software product;
+(d) bundling the Software into a paid distribution where the Software itself is part of the product being sold; and
+(e) relicensing, sublicensing, or commercially redistributing the Software itself.
+
+6. Modifications
+
+6.1 You may create modifications to the Software for your own permitted use.
+
+6.2 If you redistribute modified versions of the Software, you must:
+(a) clearly indicate that changes were made;
+(b) preserve the original copyright and attribution notices;
+(c) keep the Software under this same License; and
+(d) not imply that Tensioncore Administration Services authored or endorses your modifications.
+
+7. Contributions
+
+7.1 Unless separately agreed in writing, any contribution intentionally submitted to Tensioncore Administration Services for inclusion in the official project may be used, modified, relicensed for the project, and redistributed by Tensioncore Administration Services without compensation or further obligation.
+
+8. No Warranty
+
+THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE, AND NON-INFRINGEMENT. YOU USE THE SOFTWARE AT YOUR OWN RISK.
+
+9. Limitation of Liability
+
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, TENSIONCORE ADMINISTRATION SERVICES SHALL NOT BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN CONTRACT, TORT, OR OTHERWISE, ARISING FROM OR IN CONNECTION WITH THE SOFTWARE OR THE USE OF OR OTHER DEALINGS IN THE SOFTWARE.
+
+10. Termination
+
+10.1 This License terminates automatically if you violate its terms.
+
+10.2 Upon termination, your rights under this License immediately end, and you must stop using and distributing the Software until you come back into compliance or receive written permission from Tensioncore Administration Services.
+
+11. General
+
+11.1 This License is the complete agreement governing the Software unless superseded by a separate written agreement from Tensioncore Administration Services.
+
+11.2 If any provision of this License is found unenforceable, the remaining provisions remain in effect to the maximum extent permitted by law.
+
+11.3 Any exception, commercial redistribution right, OEM arrangement, resale right, alternate licensing arrangement, or branding permission must be granted in writing by Tensioncore Administration Services.
+
+For commercial redistribution, OEM licensing, resale rights, white-label rights, or alternate licensing inquiries, contact Tensioncore Administration Services.
