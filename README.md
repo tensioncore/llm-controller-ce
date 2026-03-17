@@ -147,3 +147,7 @@ LLM Controller CE is the start of a broader platform vision:
 **run local AI cleanly, monitor it properly, evaluate it honestly, and keep control of your own infrastructure.**
 
 That’s what this project is about.
+
+## Related Project
+
+- [LLM Controller Archive Viewer](https://github.com/tensioncore/llm-controller-archive-viewer)
