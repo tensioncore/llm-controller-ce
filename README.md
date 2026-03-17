@@ -75,7 +75,7 @@ Logs, GPU monitoring, raw SMI output, analytics, runtime visibility — the oper
 ### ⚙️ First-Run Installer
 A built-in Windows installer workflow guides initial setup, bootstrap configuration, database connection, admin creation, and runtime defaults.
 
-![Installer Screenshot Placeholder](docs/images/installer-screenshot.png)
+![Installer Screenshot Placeholder](docs/images/installer.png)
 
 ---
 
