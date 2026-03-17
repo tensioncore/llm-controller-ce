@@ -70,12 +70,12 @@ Run admin-controlled benchmark tests, compare results, track best runs, and eval
 Logs, GPU monitoring, raw SMI output, analytics, runtime visibility — the operational side of local AI is built in, not bolted on.
 
 ![Observability Screenshot Placeholder](docs/images/logs.png)
-![Observability Screenshot Placeholder](docs/images/gpu-monitoring.png)
+![Observability Screenshot Placeholder](docs/images/gpu-monitor.png)
 
 ### ⚙️ First-Run Installer
 A built-in Windows installer workflow guides initial setup, bootstrap configuration, database connection, admin creation, and runtime defaults.
 
-![Installer Screenshot Placeholder](docs/images/installer-screenshot.png)
+![Installer Screenshot Placeholder](docs/images/installer.png)
 
 ---
 
