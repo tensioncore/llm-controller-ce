@@ -2,7 +2,7 @@
   <tr style="border: 0px;">
     <td style="border: 0px;">
       
-# LLM Controller CE
+<IMG SRC="https://llmcontroller.com/llm_controller_logo.png" ALT="LLM Controller Logo"> # LLM Controller CE
 
 > **Your local-first AI control platform for running, managing, chatting with, monitoring, and benchmarking GGUF language models on your own hardware.**
 
