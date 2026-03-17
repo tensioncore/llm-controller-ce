@@ -1,8 +1,10 @@
+<table style="border: 0px;">
+  <tr style="border: 0px;">
+    <td style="border: 0px;">
+      
 # LLM Controller CE
 
 > **Your local-first AI control platform for running, managing, chatting with, monitoring, and benchmarking GGUF language models on your own hardware.**
-
-![Hero Screenshot Placeholder](docs/images/hero-screenshot.png)
 
 LLM Controller CE brings the local LLM experience together into one polished control surface.
 
@@ -11,6 +13,12 @@ It is not just a chat wrapper.
 It is not just a benchmark tool.
 
 **LLM Controller CE** is the Community Edition foundation of the LLM Controller platform — built to make self-hosted AI feel like a real product.
+    </td>
+    <td>
+      <img src="docs/images/hero-screenshot.png" alt="Hero Screenshot" width="420">
+    </td>
+  </tr>
+</table>
 
 ---
 
@@ -56,12 +64,13 @@ Attach supported text and code files directly into chat workflows so the model h
 ### 📈 Benchmarks That Actually Matter
 Run admin-controlled benchmark tests, compare results, track best runs, and evaluate models inside the same platform you use to operate them.
 
-![Benchmark Screenshot Placeholder](docs/images/benchmark-screenshot.png)
+![Benchmark Screenshot Placeholder](docs/images/benchmark.png)
 
 ### 🖥 Built-In Observability
 Logs, GPU monitoring, raw SMI output, analytics, runtime visibility — the operational side of local AI is built in, not bolted on.
 
-![Observability Screenshot Placeholder](docs/images/observability-screenshot.png)
+![Observability Screenshot Placeholder](docs/images/logs.png)
+![Observability Screenshot Placeholder](docs/images/gpu-monitoring.png)
 
 ### ⚙️ First-Run Installer
 A built-in Windows installer workflow guides initial setup, bootstrap configuration, database connection, admin creation, and runtime defaults.
