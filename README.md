@@ -70,6 +70,8 @@ Run admin-controlled benchmark tests, compare results, track best runs, and eval
 Logs, GPU monitoring, raw SMI output, analytics, runtime visibility — the operational side of local AI is built in, not bolted on.
 
 ![Observability Screenshot Placeholder](docs/images/logs.png)
+
+### NVIDIA SMI Monitor
 ![Observability Screenshot Placeholder](docs/images/gpu-monitor.png)
 
 ### ⚙️ First-Run Installer
