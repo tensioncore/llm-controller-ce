@@ -122,6 +122,7 @@ On the next launch, LLM Controller CE will start in normal mode using your confi
 
 ## Notes
 
+* LLM Controller uses MySQL for system data and SQLite for chat history
 * Default first-run installer bind is `127.0.0.1:5000`
 * Database bootstrap values are stored in the local bootstrap config
 * Runtime defaults are stored in the database table `llm_app_settings`
