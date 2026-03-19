@@ -8,7 +8,7 @@
 
 > **A local-first control platform for running, managing, chatting with, monitoring, and benchmarking GGUF language models on your own hardware.**
 
-LLM Controller CE brings local model operations and daily usage workflows into one product: setup, model selection, conversation management, benchmarks, telemetry, analytics, and administration.
+LLM Controller CE brings local AI operations and everyday workflows into one product: setup, model selection, conversation management, benchmarks, telemetry, analytics, and administration.
 
 This is not just a launcher.  
 It is not just a chat wrapper.  
@@ -79,7 +79,7 @@ The GPU monitor supports both NVIDIA and AMD telemetry paths in the current buil
 
 ![GPU Monitor Placeholder](docs/images/gpu-monitor.png)
 
-### ⚙️ Guided First-Run Setup
+### ⚙️ Built-In First-Run Setup
 A built-in two-step setup flow initializes the application, prepares the MySQL database, creates the first administrator account, and saves runtime defaults before normal app access is opened.
 
 ![Installer Screenshot Placeholder](docs/images/installer.png)
@@ -92,7 +92,7 @@ LLM Controller CE is designed to feel like a **real local AI control platform**,
 
 It brings together runtime control, conversations, reasoning-aware UI, observability, benchmarking, and system administration into one self-hosted experience that stays on your own hardware.
 
-If you care about local AI, GGUF workflows, and controlling your own stack, this is what the experience should feel like.
+For people who care about local AI and controlling their own stack, this is the experience the software should deliver.
 
 ---
 
@@ -128,7 +128,7 @@ For full install notes, see **`INSTALL.md`**.
 
 ## 🔐 Access Model
 
-LLM Controller CE is structured for authenticated shared use, not just a one-off single-user shell.
+LLM Controller CE is built for authenticated use, including shared environments, not just a one-off single-user shell.
 
 Current access behavior includes:
 
