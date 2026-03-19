@@ -10,11 +10,15 @@
 
 LLM Controller CE brings local AI operations and everyday workflows into one product: setup, model selection, conversation management, benchmarks, telemetry, analytics, and administration.
 
+Validated on Windows and Ubuntu, with support for both NVIDIA and AMD GPU environments.
+
 This is not just a launcher.  
 It is not just a chat wrapper.  
 It is not just a benchmark tool.
 
 **LLM Controller CE** is the Community Edition foundation of the LLM Controller platform — built to make self-hosted AI feel like a real product.
+
+Supporting Nvidia and AMD GPUs. Windows and Ubuntu validated
     </td>
     <td>
       <img src="docs/images/hero-screenshot.png" alt="Hero Screenshot" width="420">
