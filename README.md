@@ -90,72 +90,9 @@ A built-in two-step setup flow initializes the application, prepares the MySQL d
 
 LLM Controller CE is designed to feel like a **real local AI control platform**, not a loose collection of scripts and utilities.
 
-It combines:
+It brings together runtime control, conversations, reasoning-aware UI, observability, benchmarking, and system administration into one self-hosted experience that stays on your own hardware.
 
-- managed model availability
-- role-aware access
-- persistent conversations
-- attachment-aware prompting
-- benchmark workflows
-- runtime visibility
-- GPU telemetry
-- saved analytics
-- administrative controls
-
-The result is a self-hosted experience that goes far beyond a simple launcher or chat shell.
-
----
-
-## 🧩 Core Product Areas
-
-### Model Management
-- Scan a configured model directory for GGUF models
-- Recognize complete split model sets as single usable entries
-- Enable, disable, favorite, and benchmark-tag models
-- Sort model choices by practical criteria like size or speed
-- Let administrators start and stop the active runtime
-- Support CPU-only loading and configured multi-GPU tensor split behavior when appropriate
-
-### Chat & Workflows
-- Persistent chat sessions with sidebar history
-- Session rename and delete support
-- Live streaming responses
-- Stop generation mid-stream
-- Regenerate the latest assistant response
-- Edit and re-run the latest user prompt
-- Variant paging for recent regenerated or edited turns
-- Markdown, math rendering, and code block copy actions
-- Debug/raw response inspection
-- Automatic session title generation
-
-### Benchmarking
-- Administrator-run benchmark workflow
-- Prompt-by-prompt, model-by-model execution
-- Skip previously completed work or force reruns
-- Cancel active benchmark runs
-- Best-run summary view
-- Detailed saved run results
-- Stale-result signaling when benchmark prompts change
-- Per-model benchmark history reset
-
-### Monitoring & Analytics
-- Live runtime log streaming
-- Start, stop, and clear log output in the UI
-- Structured GPU monitoring
-- Raw telemetry access with copy support
-- Per-model analytics including request counts, response times, throughput, and token totals
-- Visibility into runtime state and benchmark blocking conditions
-
-### Administration & Data Controls
-- User creation and non-admin deletion
-- Temporary-password onboarding flow
-- Configurable password policies
-- Saved model and attachment defaults
-- Benchmark prompt editing
-- Chat export in JSON, CSV, and Markdown
-- Chat import from JSON and CSV
-- User-level and admin-level chat cleanup workflows
-- Settings backup export
+If you care about local AI, GGUF workflows, and controlling your own stack, this is what the experience should feel like.
 
 ---
 
@@ -200,26 +137,6 @@ Current access behavior includes:
 - Role-aware interface behavior
 - Administrator-only management controls
 - Forced password change flow for accounts created with temporary credentials
-
----
-
-## 💾 Persistence & Data Handling
-
-LLM Controller CE stores the information needed to behave like a persistent workspace rather than a disposable session:
-
-- saved conversations
-- generated titles
-- model associations
-- response metrics
-- reasoning content when present
-- attachment context
-- benchmark history
-- analytics summaries
-- settings
-- account data
-- model registry state
-
-Users and administrators also have export and cleanup workflows for chat data, while settings can be exported as a backup artifact.
 
 ---
 
