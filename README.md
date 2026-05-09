@@ -26,6 +26,8 @@ It is not just a benchmark tool.
 
 ---
 
+![GPU Monitor Placeholder](docs/images/llm-controller-hero.png)
+
 ## 🚀 Why LLM Controller CE?
 
 Running local models often means juggling folders, terminals, runtime flags, scattered utilities, and disconnected interfaces.
