@@ -1,0 +1,43 @@
+<div class="modal-overlay" id="aboutModal">
+    <div class="about-modal-card">
+      <button class="about-close-btn" onclick="toggleAboutModal(false)">&times;</button>
+
+      <img src="/static/LLM-Controller-LOGO.png" alt="LLM Controller Logo" class="about-logo" />
+
+      <h2>LLM Controller</h2>
+      <div class="about-version" id="aboutVersion">{{ about_version|default(version|default("LLM Controller CE")) }}</div>
+
+      <h3>About LLM Controller</h3>
+
+      <div class="about-desc">
+        <strong>
+          LLM Controller is a local-first dashboard for running and managing Large Language Models on your own hardware.
+        </strong>
+        <br><br>
+        It lets you launch, switch, and monitor models like Llama and DeepSeek with zero cloud dependencies, full privacy, and real-time insight into performance and GPU usage.
+        <br><br>
+        Built on <code>llama-server</code>, it automatically detects supported GPU runtimes and supports advanced multi-GPU and dual-model setups without manual configuration.
+      </div>
+
+      <div class="about-section-title">Key Features</div>
+      <ul>
+        <li><strong>Model Management:</strong> Scan, launch, stop, and switch models instantly.</li>
+        <li><strong>Live Analytics:</strong> Logs, GPU telemetry, token throughput, and latency metrics.</li>
+        <li><strong>Modern Chat UI:</strong> Streaming output, Markdown, code, math, and titles.</li>
+        <li><strong>Local &amp; Private:</strong> 100% self-hosted. No cloud, no data sharing.</li>
+        <li><strong>Actively Developed:</strong> Built to evolve with new models and features.</li>
+      </ul>
+
+      <div class="about-desc" style="text-align:center;">
+        <strong>LLM Controller</strong><br>
+        <em>Local AI, done right.</em>
+      </div>
+
+      <div class="about-footer">
+        Built by Tensioncore Administration Services<br>
+        <a href="https://wiki.llmcontroller.com/" style="color:#92c7f6;" target="_blank" rel="noopener">Read the Wiki</a>
+        <br><br>
+        &copy; 2025-2026 Tensioncore Administration Services. All rights reserved.
+      </div>
+    </div>
+  </div>

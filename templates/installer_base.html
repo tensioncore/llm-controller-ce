@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png">
+    <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32x32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon-16x16.png">
+    <link rel="manifest" href="/static/site.webmanifest">
+    <title>{% block title %}LLM Controller CE Setup{% endblock %}</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="installer-page">
+    <div class="main-content installer-main-content">
+        <div class="topbar installer-topbar">
+            <div class="installer-brand">
+                <img src="/static/LLM-Controller-LOGO.png" alt="LLM Controller Logo" class="installer-logo">
+                <div class="installer-brand-copy">
+                    <div class="installer-brand-title">LLM Controller CE</div>
+                    <div class="installer-brand-subtitle">{% block installer_subtitle %}Installer{% endblock %}</div>
+                </div>
+            </div>
+            <button id="aboutBtn" title="About LLM Controller CE" aria-label="About LLM Controller CE">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="#FFFFFF" class="bi bi-info-circle" viewBox="0 0 16 16">
+                    <path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14m0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16"/>
+                    <path d="m8.93 6.588-2.29.287-.082.38.45.083c.294.07.352.176.288.469l-.738 3.468c-.194.897.105 1.319.808 1.319.545 0 1.178-.252 1.465-.598l.088-.416c-.2.176-.492.246-.686.246-.275 0-.375-.193-.304-.533zM9 4.5a1 1 0 1 1-2 0 1 1 0 0 1 2 0"/>
+                </svg>
+            </button>
+        </div>
+
+        <main class="installer-shell">
+            {% block content %}{% endblock %}
+
+            <footer class="installer-footer">
+                <a href="#" id="installerAboutLink">About LLM Controller CE</a>
+            </footer>
+        </main>
+    </div>
+
+    {% set about_version = about_version|default(installer_version|default("LLM Controller CE")) %}
+    {% include "_about_modal.html" %}
+
+    <script>
+        window.toggleAboutModal = function (show) {
+            const modal = document.getElementById("aboutModal");
+            if (!modal) return;
+            modal.classList.toggle("active", Boolean(show));
+        };
+
+        document.addEventListener("DOMContentLoaded", function () {
+            const aboutBtn = document.getElementById("aboutBtn");
+            const aboutLink = document.getElementById("installerAboutLink");
+            const aboutModal = document.getElementById("aboutModal");
+
+            if (aboutBtn) {
+                aboutBtn.addEventListener("click", function () {
+                    window.toggleAboutModal(true);
+                });
+            }
+
+            if (aboutLink) {
+                aboutLink.addEventListener("click", function (event) {
+                    event.preventDefault();
+                    window.toggleAboutModal(true);
+                });
+            }
+
+            if (aboutModal) {
+                aboutModal.addEventListener("click", function (event) {
+                    if (event.target === aboutModal) {
+                        window.toggleAboutModal(false);
+                    }
+                });
+            }
+        });
+
+        document.addEventListener("keydown", function (event) {
+            if (event.key === "Escape") {
+                window.toggleAboutModal(false);
+            }
+        });
+    </script>
+</body>
+</html>

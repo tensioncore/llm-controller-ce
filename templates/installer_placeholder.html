@@ -1,0 +1,133 @@
+{% extends "installer_base.html" %}
+
+{% block title %}LLM Controller CE Setup{% endblock %}
+{% block installer_subtitle %}Bootstrap Runtime Setup{% endblock %}
+
+{% block content %}
+<section class="admin-settings-panel installer-panel">
+    <div class="drawer-header installer-panel-header">
+        <span>Step 1 of 2: Bootstrap Setup</span>
+    </div>
+
+    <div class="installer-copy">
+        <p>Step 1 collects the bootstrap values needed to initialize the local runtime, import the CE schema and seed data, and create the initial admin account.</p>
+        <p class="refresh-notice">Submitting this form does not finalize setup yet. <code>setup_complete</code> will stay <code>false</code> until the later review and finalization step.</p>
+    </div>
+
+    {% if installer_error %}
+    <div class="installer-banner">{{ installer_error }}</div>
+    {% endif %}
+
+    <form method="post" action="{{ url_for('installer.bootstrap_submit') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <section class="installer-section">
+            <h2>Bootstrap Runtime</h2>
+            <div class="params-grid installer-grid">
+                <div class="form-row">
+                    <label for="app_host">App host</label>
+                    <input id="app_host" name="app_host" type="text" value="{{ form_data.app_host }}">
+                    <div class="installer-hint">Defaults to <code>127.0.0.1</code> if left blank.</div>
+                    {% if errors.app_host %}<div class="installer-error">{{ errors.app_host }}</div>{% endif %}
+                </div>
+
+                <div class="form-row">
+                    <label for="app_port">App port</label>
+                    <input id="app_port" name="app_port" type="text" inputmode="numeric" value="{{ form_data.app_port }}" required>
+                    {% if errors.app_port %}<div class="installer-error">{{ errors.app_port }}</div>{% endif %}
+                </div>
+
+                <div class="form-row">
+                    <label for="cors-allowed-origins">CORS accepted origins (optional)</label>
+                    <input id="cors-allowed-origins" name="cors-allowed-origins" type="text" value="{{ form_data['cors-allowed-origins'] }}" placeholder="http://app.example.com, https://app.example.com">
+                    <div class="installer-hint">Optional. Enter comma-separated browser origins if the app will be opened through a public host or reverse proxy.</div>
+                    {% if errors.get('cors-allowed-origins') %}<div class="installer-error">{{ errors.get('cors-allowed-origins') }}</div>{% endif %}
+                </div>
+            </div>
+        </section>
+
+        <section class="installer-section">
+            <h2>Database</h2>
+            <div class="params-grid installer-grid">
+                <div class="form-row">
+                    <label for="db_host">DB host</label>
+                    <input id="db_host" name="db_host" type="text" value="{{ form_data.db_host }}" required>
+                    {% if errors.db_host %}<div class="installer-error">{{ errors.db_host }}</div>{% endif %}
+                </div>
+
+                <div class="form-row">
+                    <label for="db_port">MySQL port</label>
+                    <input id="db_port" name="db_port" type="number" inputmode="numeric" min="1" max="65535" value="{{ form_data.db_port }}">
+                    <div class="installer-hint">Defaults to <code>3306</code> if left blank.</div>
+                    {% if errors.db_port %}<div class="installer-error">{{ errors.db_port }}</div>{% endif %}
+                </div>
+
+                <div class="form-row">
+                    <label for="db_name">DB name</label>
+                    <input id="db_name" name="db_name" type="text" value="{{ form_data.db_name }}" required>
+                    {% if errors.db_name %}<div class="installer-error">{{ errors.db_name }}</div>{% endif %}
+                </div>
+
+                <div class="form-row">
+                    <label for="db_user">DB username</label>
+                    <input id="db_user" name="db_user" type="text" value="{{ form_data.db_user }}" required>
+                    {% if errors.db_user %}<div class="installer-error">{{ errors.db_user }}</div>{% endif %}
+                </div>
+
+                <div class="form-row">
+                    <label for="db_password">DB password</label>
+                    <input id="db_password" name="db_password" type="password" value="{{ form_data.db_password }}">
+                    {% if errors.db_password %}<div class="installer-error">{{ errors.db_password }}</div>{% endif %}
+                </div>
+            </div>
+        </section>
+
+        <section class="installer-section">
+            <h2>Initial Admin</h2>
+            <div class="params-grid installer-grid">
+                <div class="form-row">
+                    <label for="admin_email">Initial admin email</label>
+                    <input id="admin_email" name="admin_email" type="email" value="{{ form_data.admin_email }}" required>
+                    <div class="installer-hint">This must be the email address used to sign in through the normal CE login form.</div>
+                    {% if errors.admin_email %}<div class="installer-error">{{ errors.admin_email }}</div>{% endif %}
+                </div>
+
+                <div class="form-row">
+                    <label for="admin_password">Initial admin password</label>
+                    <input id="admin_password" name="admin_password" type="password" value="">
+                    <div class="installer-hint">This password must satisfy the selected default complexity below.</div>
+                    {% if errors.admin_password %}<div class="installer-error">{{ errors.admin_password }}</div>{% endif %}
+                </div>
+            </div>
+        </section>
+
+        <section class="installer-section">
+            <h2>Default Password Complexity</h2>
+            <div class="params-grid installer-grid">
+                <div class="form-row">
+                    <label for="password_policy_level">Default password complexity</label>
+                    <select id="password_policy_level" name="password_policy_level">
+                        {% for value, label in password_policy_options %}
+                        <option value="{{ value }}" {% if form_data.password_policy_level == value %}selected{% endif %}>{{ label }}</option>
+                        {% endfor %}
+                    </select>
+                    {% if errors.password_policy_level %}<div class="installer-error">{{ errors.password_policy_level }}</div>{% endif %}
+                </div>
+            </div>
+        </section>
+
+        <div class="button-row">
+            <button type="submit" class="start-model-btn">Run Step 1 Setup</button>
+        </div>
+    </form>
+
+    <div class="installer-meta">
+        <ul>
+            <li>Bootstrap config path: <code>{{ bootstrap_config_path }}</code></li>
+            <li>Current installer bind target: <code>{{ app_host }}:{{ app_port }}</code></li>
+            <li>Schema import source: <code>{{ schema_sql_path }}</code></li>
+            <li>Seed import source: <code>{{ seed_sql_path }}</code></li>
+            <li>Current setup_complete: <code>{{ "true" if setup_complete else "false" }}</code></li>
+        </ul>
+    </div>
+</section>
+{% endblock %}

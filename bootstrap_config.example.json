@@ -1,0 +1,10 @@
+{
+  "app_host": "127.0.0.1",
+  "app_port": 5000,
+  "db_host": "localhost",
+  "db_name": "llmcontroller",
+  "db_user": "llmcontroller",
+  "db_password": "",
+  "cors-allowed-origins": [],
+  "setup_complete": false
+}

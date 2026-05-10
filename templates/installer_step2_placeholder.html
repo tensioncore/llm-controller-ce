@@ -1,0 +1,55 @@
+{% extends "installer_base.html" %}
+
+{% block title %}LLM Controller CE Setup - Step 2{% endblock %}
+{% block installer_subtitle %}Review Seeded Defaults{% endblock %}
+
+{% block content %}
+<section class="admin-settings-panel installer-panel">
+    <div class="drawer-header installer-panel-header">
+        <span>Step 2 of 2: Review Defaults And Finalize</span>
+    </div>
+
+    <div class="installer-copy">
+        <p>Review the seeded CE defaults below, adjust them if needed, and then finalize setup. These values save back into the real <code>llm_app_settings</code> rows used by the normal application.</p>
+        <p class="refresh-notice">Bootstrap host, port, and DB connection details remain file-based in the local bootstrap config. This page only edits runtime defaults stored in the database.</p>
+    </div>
+
+    {% if installer_error %}
+    <div class="installer-banner">{{ installer_error }}</div>
+    {% endif %}
+
+    <form method="post" action="{{ url_for('installer.step_two') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="params-grid installer-grid">
+            {% for field in review_fields %}
+            <div class="form-row">
+                <label for="{{ field.field }}">{{ field.label }}</label>
+                <input
+                    id="{{ field.field }}"
+                    name="{{ field.field }}"
+                    type="text"
+                    {% if field.value_type == 'int' %}inputmode="numeric"{% endif %}
+                    value="{{ form_data[field.field] }}"
+                    required
+                >
+                <div class="installer-hint"><code>{{ field.key }}</code></div>
+                {% if errors[field.field] %}<div class="installer-error">{{ errors[field.field] }}</div>{% endif %}
+            </div>
+            {% endfor %}
+        </div>
+
+        <div class="button-row">
+            <button type="submit" class="start-model-btn">Save Defaults And Finalize Setup</button>
+        </div>
+    </form>
+
+    <div class="installer-meta">
+        <ul>
+            <li>Bootstrap config path: <code>{{ bootstrap_config_path }}</code></li>
+            <li>Configured bind target: <code>{{ bootstrap_config.app_host }}:{{ bootstrap_config.app_port }}</code></li>
+            <li>Configured database: <code>{{ bootstrap_config.db_host }}:{{ bootstrap_config.db_port }} / {{ bootstrap_config.db_name }}</code></li>
+            <li>Current setup_complete: <code>{{ "true" if setup_complete else "false" }}</code></li>
+        </ul>
+    </div>
+</section>
+{% endblock %}

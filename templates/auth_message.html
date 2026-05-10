@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LLM Controller | {{ title }}</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <style>
+        body {
+            background: #15191e;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-family: 'Segoe UI', Arial, sans-serif;
+            margin: 0;
+            padding: 18px;
+        }
+        .auth-box {
+            background: #21242a;
+            padding: 34px 30px 30px 30px;
+            border-radius: 14px;
+            box-shadow: 0 6px 36px #171c2a80;
+            min-width: 320px;
+            max-width: 500px;
+            width: 100%;
+            text-align: center;
+        }
+        h2 {
+            color: #83bcff;
+            margin: 0 0 14px 0;
+        }
+        p {
+            color: #ced6e5;
+            line-height: 1.45;
+        }
+        a {
+            display: inline-block;
+            margin-top: 12px;
+            color: #9fd5ff;
+            text-decoration: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="auth-box">
+        <h2>{{ title }}</h2>
+        <p>{{ message }}</p>
+        {% if link_url and link_text %}
+            <a href="{{ link_url }}">{{ link_text }}</a>
+        {% endif %}
+    </div>
+</body>
+</html>

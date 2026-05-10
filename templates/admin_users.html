@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin: User Management</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <style>
+        body { background: #181a1b; color: #e6e8ff; font-family: 'Segoe UI', Arial, sans-serif; margin: 0; }
+        .admin-container { max-width: 1080px; margin: 36px auto; padding: 18px 2vw 40px 2vw; background: #20222a; border-radius: 13px; box-shadow: 0 2px 24px #0003; }
+        h2 { margin-top: 0; font-size: 1.3em; letter-spacing: 0.02em; color: #8ac6ff; }
+        form.add-user-form { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 20px; }
+        form.add-user-form input, form.add-user-form select, form.add-user-form button {
+            font-size: 1.1em; padding: 7px 11px; border-radius: 6px; border: 1px solid #354052; background: #181a1b; color: #e6e8ff;
+        }
+        form.add-user-form button { background: #1f7fae; color: #fff; border: none; cursor: pointer; font-weight: 600; transition: background 0.15s;}
+        form.add-user-form button:hover { background: #2893ce; }
+        table.responsive-table { width: 100%; border-collapse: separate; border-spacing: 0; box-shadow: 0 2px 12px #1113; background: #242630; border-radius: 10px; overflow: hidden; margin-bottom: 2em; }
+        .responsive-table th, .responsive-table td { padding: 13px 10px; text-align: left; }
+        .responsive-table th { background: #232b37; color: #86c7ff; font-weight: 600; font-size: 1.05em;}
+        .responsive-table tr { border-bottom: 1px solid #24273d; }
+        .responsive-table tr:last-child { border-bottom: none; }
+        .responsive-table td { vertical-align: middle; }
+        .user-action-btn {
+            padding: 6px 15px; border: none; border-radius: 6px; background: #2d3849; color: #ee7171; font-size: 1.08em;
+            cursor: pointer; transition: background 0.14s, color 0.14s; font-family: inherit;
+        }
+        .user-action-btn:hover { background: #52282e; color: #fff; }
+        .user-role-admin { color: #ffe375; font-weight: 700; }
+        @media (max-width: 700px) {
+            .admin-container { padding: 10px 2vw; }
+            table.responsive-table, .responsive-table th, .responsive-table td { font-size: 0.97em; }
+            form.add-user-form { flex-direction: column; align-items: stretch; }
+        }
+        .status-dot {
+            display: inline-block;
+            width: 13px;
+            height: 13px;
+            border-radius: 50%;
+            background: #76f984;
+            margin-right: 4px;
+            box-shadow: 0 1px 5px #34ff877c;
+        }
+        .status-dot.inactive { background: #ff7b89; box-shadow: 0 1px 5px #ff7b897c; }
+        .actions-cell { min-width: 100px; }
+        .delete-user-form { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .delete-user-select {
+            min-width: 132px;
+            font-size: 0.95em;
+            padding: 6px 8px;
+            border-radius: 6px;
+            border: 1px solid #354052;
+            background: #181a1b;
+            color: #e6e8ff;
+        }
+        .flash-message {
+            margin-bottom: 12px;
+            padding: 10px 12px;
+            border-radius: 8px;
+            font-size: 0.98em;
+        }
+        .flash-message.success { background: #173324; color: #9ef0ba; border: 1px solid #235b3d; }
+        .flash-message.error { background: #3a2024; color: #ffb0b0; border: 1px solid #7a3a44; }
+    </style>
+</head>
+<body>
+<div class="admin-container">
+    <h2>User Management</h2>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+    <div>
+        {% for category, message in messages %}
+        <div class="flash-message {{ category }}">{{ message }}</div>
+        {% endfor %}
+    </div>
+    {% endif %}
+    {% endwith %}
+    <form method="post" action="{{ url_for('admin.add_user') }}" class="add-user-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="email" name="email" placeholder="Email" required>
+        <input type="hidden" name="role" value="user">
+        <button type="submit">➕ Add User</button>
+    </form>
+    <table class="responsive-table">
+        <thead>
+            <tr>
+                <th>ID</th><th>Email</th><th>Role</th><th>Temp Password</th><th>Status</th>
+                <th>Created</th><th>Last Login</th><th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for user in users %}
+        <tr>
+            <td data-label="ID">{{ user.id }}</td>
+            <td data-label="Email">{{ user.email }}</td>
+            <td data-label="Role" class="{{ 'user-role-admin' if user.role == 'admin' else '' }}">{{ user.role }}</td>
+            <td data-label="Temp Password">
+                    {% if user.temp_password %}
+                      <span class="temp-pw">{{ user.temp_password }}</span>
+                      <button class="user-action-btn" type="button" data-email="{{ user.email }}" onclick="shareTempPw(this, this.dataset.email)">Share</button>
+                    {% else %}
+                      <span style="color:#7fbe7f;font-size:0.97em;">—</span>
+                    {% endif %}
+              </td>
+            <td data-label="Status">
+                <span class="status-dot{% if not user.is_active %} inactive{% endif %}"></span>
+                {{ 'Active' if user.is_active else 'Inactive' }}
+            </td>
+            <td data-label="Created">{{ user.created_at }}</td>
+            <td data-label="Last Login">{{ user.last_login or '-' }}</td>
+            <td class="actions-cell" data-label="Actions">
+                {% if user.role != 'admin' %}
+                <form method="post" action="{{ url_for('admin.delete_user', user_id=user.id) }}" class="delete-user-form">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <select name="chat_action" class="delete-user-select" aria-label="Chat retention choice">
+                        <option value="retain" selected>Retain Chats</option>
+                        <option value="purge">Purge Chats</option>
+                    </select>
+                    <button class="user-action-btn" type="submit" title="Delete user" onclick="return confirmDeleteUser(this.form)">🗑️</button>
+                </form>
+                {% else %}
+                    <span title="Admin cannot be deleted" style="color:#888;font-size:1.25em;">—</span>
+                {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    <h2>Password Policy Settings</h2>
+    <form id="passwordPolicyForm" method="POST" action="{{ url_for('settings_routes.update_password_policy') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <label>
+            <span>Policy Level:</span>
+            <select name="password_policy" id="pw_policy_level" style="margin: 0 0.5em;">
+                <option value="basic"    {% if settings.password_policy.level == "basic" %}selected{% endif %}>Basic</option>
+                <option value="moderate" {% if settings.password_policy.level == "moderate" %}selected{% endif %}>Moderate</option>
+                <option value="strong"   {% if settings.password_policy.level == "strong" %}selected{% endif %}>Strong</option>
+                <option value="custom"   {% if settings.password_policy.level == "custom" %}selected{% endif %}>Custom</option>
+            </select>
+        </label>
+        <div id="pw_custom_options" style="{% if settings.password_policy.level != 'custom' %}display:none;{% endif %};margin-top:0.6em;">
+            <label>Min Length: <input type="number" name="min_length" value="{{ settings.password_policy.min_length }}" min="6" max="128"></label>
+            <label><input type="checkbox" name="require_upper" {% if settings.password_policy.require_upper %}checked{% endif %}> Require uppercase</label>
+            <label><input type="checkbox" name="require_lower" {% if settings.password_policy.require_lower %}checked{% endif %}> Require lowercase</label>
+            <label><input type="checkbox" name="require_digit" {% if settings.password_policy.require_digit %}checked{% endif %}> Require digit</label>
+            <label><input type="checkbox" name="require_special" {% if settings.password_policy.require_special %}checked{% endif %}> Require special</label>
+        </div>
+        <button type="submit" class="btn save-btn" style="margin-top:0.7em;">Save Password Policy</button>
+        <div id="pw-policy-alert" style="margin-top:0.6em;"></div>
+    </form>
+    
+      
+    <a href="/" style="color:#9ee7ff;text-decoration:none;font-size:1.09em;">← Back to App</a>
+</div>
+<script>
+    document.getElementById('pw_policy_level').addEventListener('change', function() {
+        document.getElementById('pw_custom_options').style.display = (this.value === 'custom') ? 'block' : 'none';
+    });
+    
+    // Password Policy AJAX submit:
+    document.getElementById('passwordPolicyForm').onsubmit = function(e) {
+        e.preventDefault();
+        const form = this;
+        const data = {};
+        Array.from(form.elements).forEach(el => {
+            if (!el.name) return;
+            if (el.type === 'checkbox') {
+                data[el.name] = el.checked;
+            } else {
+                data[el.name] = el.value;
+            }
+        });
+    
+        fetch(form.action, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "X-CSRFToken": form.csrf_token.value
+            },
+            body: JSON.stringify(data)
+        }).then(resp => resp.json())
+          .then(json => {
+            const alert = document.getElementById('pw-policy-alert');
+            if (json.status === "success") {
+                alert.textContent = "Password policy updated!";
+                alert.className = "success";
+            } else {
+                let msg = (json.errors)
+                    ? Object.values(json.errors).join(' ')
+                    : (json.error || "Unknown error");
+                alert.textContent = msg;
+                alert.className = "error";
+            }
+          }).catch(() => {
+            const alert = document.getElementById('pw-policy-alert');
+            if (alert) {
+                alert.textContent = "Network error";
+                alert.className = "error";
+            } else if (typeof showCustomAlert === "function") {
+                showCustomAlert("Network error");
+            }
+          });
+    };
+    
+function showCopied(message = "Copied!") {
+  let toast = document.createElement('div');
+  toast.textContent = message;
+  toast.style.position = "fixed";
+  toast.style.bottom = "30px";
+  toast.style.left = "50%";
+  toast.style.transform = "translateX(-50%)";
+  toast.style.background = "#23bb80";
+  toast.style.color = "#fff";
+  toast.style.padding = "8px 20px";
+  toast.style.borderRadius = "7px";
+  toast.style.boxShadow = "0 2px 8px #0003";
+  toast.style.fontSize = "1rem";
+  toast.style.zIndex = "9999";
+  document.body.appendChild(toast);
+  setTimeout(() => { toast.remove(); }, 1200);
+}
+
+function copyTextToClipboard(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+      return navigator.clipboard.writeText(text)
+          .then(() => showCopied())
+          .catch(() => prompt("Copy this text:", text));
+  } else {
+      // Fallback for HTTP/old browsers
+      const temp = document.createElement('textarea');
+      temp.value = text;
+      document.body.appendChild(temp);
+      temp.select();
+      try {
+          document.execCommand("copy");
+          showCopied();
+      } catch (e) {
+          prompt("Copy this text:", text);
+      }
+      document.body.removeChild(temp);
+      return Promise.resolve();
+  }
+}
+
+    function shareTempPw(button, email) {
+        const pw = button.parentElement.querySelector('.temp-pw').textContent;
+        const msg = `LLM Controller\n\nA new account has been created for you.\n\nEmail: ${email}\nTemporary Password: ${pw}\n\nPlease login and change your password.`;
+
+        if (navigator.share) {
+            navigator.share({
+                title: "Your Account Details",
+                text: msg
+            }).catch(() => {
+                copyTextToClipboard(msg);
+            });
+        } else {
+            copyTextToClipboard(msg);
+        }
+    }
+
+    function confirmDeleteUser(form) {
+        const select = form.querySelector('select[name="chat_action"]');
+        const action = (select && select.value === 'purge')
+            ? 'delete this user and purge their chats'
+            : 'delete this user and retain their chats';
+        return confirm(`Are you sure you want to ${action}?`);
+    }
+
+
+</script>
+
+</body>
+</html>

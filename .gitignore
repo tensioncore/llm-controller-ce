@@ -71,6 +71,7 @@ instance/
 .webassets-cache
 
 # Local SQLite / local DB artifacts
+chats.sqlite
 *.sqlite
 *.sqlite3
 *.db
@@ -82,6 +83,7 @@ db.sqlite3-journal
 *.log
 logs/
 log/
+runtime_logs/
 *.out
 
 # OS / editor junk
@@ -110,12 +112,17 @@ exports/
 backups/
 tmp/
 temp/
+*.bak
+*.tmp
 
 # --------------------------------------------------
 # LLM Controller CE specific
 # --------------------------------------------------
 
 # Local runtime config / secrets
+bootstrap_config.json
+bootstrap_config.py
+flask_secret.key
 settings.local.*
 config.local.*
 secrets.*
@@ -140,11 +147,15 @@ sessions/
 
 # Model storage / GGUFs / split model shards
 models/
+models/**/*.gguf
+models/**/*.ggml
 *.gguf
 *.gguf.*
+*.ggml
 *.bin
 
 # llama.cpp / llama-server local binaries or custom builds
+llama-server/
 llama.cpp/build/
 llama-bin/
 llama-runtime/

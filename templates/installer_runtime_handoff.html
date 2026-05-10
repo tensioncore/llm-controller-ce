@@ -1,0 +1,26 @@
+{% extends "installer_base.html" %}
+
+{% block title %}LLM Controller CE Ready{% endblock %}
+{% block installer_subtitle %}Setup Complete{% endblock %}
+
+{% block content %}
+<section class="admin-settings-panel installer-panel">
+    <div class="drawer-header installer-panel-header">
+        <span>Setup Complete</span>
+    </div>
+
+    <div class="installer-copy installer-status-copy">
+        <p>The installer has finished and the bootstrap config is now marked with <code>setup_complete = true</code>.</p>
+        <p>This process is still serving the installer-time route set. On the next clean app start, LLM Controller CE will load the full normal interface and login flow automatically.</p>
+        <p>Restart the application, then reopen it to continue with the normal login flow.</p>
+    </div>
+
+    <div class="installer-meta">
+        <ul class="installer-status-list">
+            <li>The installer flow is complete.</li>
+            <li>The next normal app start will load the standard login and application routes.</li>
+            <li>Your bootstrap and runtime defaults are now saved.</li>
+        </ul>
+    </div>
+</section>
+{% endblock %}

@@ -1,0 +1,8 @@
+Flask
+Flask-Bcrypt
+Flask-Cors
+Flask-SocketIO
+Flask-WTF
+gevent
+mysql-connector-python
+requests

@@ -1,0 +1,1095 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32x32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="/static/favicon-16x16.png">
+<link rel="manifest" href="/static/site.webmanifest">
+    <title>{{ version }}</title>
+    <link rel="stylesheet" href="/static/style.css">
+
+    <!-- Include Socket.IO client -->
+    <script src="/static/marked.min.js"></script>
+    <script src="/static/socket.io.js"></script>
+
+    <!-- Defer our internal JS so it runs after DOM is parsed -->
+    <script src="/static/_http.js" defer></script>
+    <script src="/static/_utils.js" defer></script>
+    <script src="/static/model_module.js" defer></script>
+    <script src="/static/analytics_ui.js" defer></script>
+    {% if session.get('role') == 'admin' %}
+    <script src="/static/benchmark_ui.js" defer></script>
+    {% endif %}
+
+    <!-- scripts.js creates the socket; load it before _system.js -->
+    <script src="/static/scripts.js" defer></script>
+    <script src="/static/_system.js" defer></script>
+
+    <script>
+        window.CSRF_TOKEN = "{{ csrf_token() }}";
+      </script>      
+        <script>
+            window.MathJax = {
+                options: {
+                    enableMenu: false,   // ✅ kills that popup entirely
+                    },
+            tex: {
+                inlineMath: [['$', '$'], ['\\(', '\\)']],
+                displayMath: [['$$', '$$'], ['\\[', '\\]']],
+                processEscapes: true,
+            },
+            svg: { fontCache: 'global' }
+            };
+        </script>
+        
+        <script defer src="/static/mathjax/tex-mml-svg.js"></script>
+</head>
+<body>
+    <!-- Sidebar -->
+    <div class="sidebar">
+        <h2>New Chat <button class="new-chat">➕</button></h2>
+        <ul id="chatHistory"></ul>
+    </div>
+
+    <div class="main-content">
+        <button id="sidebarToggle" class="sidebar-toggle-btn">☰</button>
+        <div class="topbar">
+            <h1 id="appTitle">{{ version }}</h1>
+            {% if session.get('user_id') %}
+            <button id="openUserSettings" class="header-settings-btn" title="Account Settings" aria-label="Account Settings" onclick="toggleUserSettingsModal(true)">
+                <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1" viewBox="0 0 16 16">
+                    <g>
+                    <circle cx="8" cy="8" r="2.1" stroke="currentColor" fill="none"/>
+                        <path d="M11 5a3 3 0 1 1-6 0 3 3 0 0 1 6 0M8 7a2 2 0 1 0 0-4 2 2 0 0 0 0 4m.256 7a4.5 4.5 0 0 1-.229-1.004H3c.001-.246.154-.986.832-1.664C4.484 10.68 5.711 10 8 10q.39 0 .74.025c.226-.341.496-.65.804-.918Q8.844 9.002 8 9c-5 0-6 3-6 4s1 1 1 1zm3.63-4.54c.18-.613 1.048-.613 1.229 0l.043.148a.64.64 0 0 0 .921.382l.136-.074c.561-.306 1.175.308.87.869l-.075.136a.64.64 0 0 0 .382.92l.149.045c.612.18.612 1.048 0 1.229l-.15.043a.64.64 0 0 0-.38.921l.074.136c.305.561-.309 1.175-.87.87l-.136-.075a.64.64 0 0 0-.92.382l-.045.149c-.18.612-1.048.612-1.229 0l-.043-.15a.64.64 0 0 0-.921-.38l-.136.074c-.561.305-1.175-.309-.87-.87l.075-.136a.64.64 0 0 0-.382-.92l-.148-.045c-.613-.18-.613-1.048 0-1.229l.148-.043a.64.64 0 0 0 .382-.921l-.074-.136c-.306-.561.308-1.175.869-.87l.136.075a.64.64 0 0 0 .92-.382zM14 12.5a1.5 1.5 0 1 0-3 0 1.5 1.5 0 0 0 3 0"/>
+                    </g>
+                </svg>
+            </button>          
+            {% endif %}
+
+            <!-- Place next to logout/info in your topbar/header -->
+            {% if session.get('role') == 'admin' %}
+            <a href="{{ url_for('admin.admin_users') }}" class="header-admin-btn" title="User Management">
+            <svg width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 16 16">
+                <path d="M8 2.1L3 4v4.8a7 7 0 0 0 5 6.1 7 7 0 0 0 5-6.1V4L8 2.1z" stroke="currentColor" fill="none"/>
+                <path d="M8 8.5v2.3" stroke="currentColor" stroke-linecap="round"/>
+                <circle cx="8" cy="7" r="1" fill="currentColor"/>
+            </svg>
+            </a>
+            {% endif %}
+            <a href="{{ url_for('auth.logout') }}" class="header-logout-btn" title="Log out" aria-label="Log out">
+            <!-- SVG BELOW -->
+            <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 16 16" fill="none">
+                <circle cx="8" cy="8" r="7.3" stroke="currentColor" stroke-width="1.5" fill="none"/>
+                <path d="M8.5 5.5l2.5 2.5-2.5 2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M4.5 8h6.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+            </a>
+            <button id="aboutBtn" title="About LLM Controller" aria-label="About LLM Controller">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="#FFFFFF" class="bi bi-info-circle" viewBox="0 0 16 16">
+                    <path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14m0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16"/>
+                    <path d="m8.93 6.588-2.29.287-.082.38.45.083c.294.07.352.176.288.469l-.738 3.468c-.194.897.105 1.319.808 1.319.545 0 1.178-.252 1.465-.598l.088-.416c-.2.176-.492.246-.686.246-.275 0-.375-.193-.304-.533zM9 4.5a1 1 0 1 1-2 0 1 1 0 0 1 2 0"/>
+                </svg>
+            </button>
+        </div>
+
+        <div class="chat-container">
+            <div id="chatMessages" class="chat-messages">
+                <!-- Chat bubbles go here -->
+            </div>
+        </div>
+        <button id="scrollToBottomBtn" class="scroll-to-bottom-btn" type="button" aria-label="Scroll to bottom" title="Scroll to bottom" aria-hidden="true">↓</button>
+        <div class="chat-input-container">
+            <div id="attachmentPreview" class="attachment-preview-list"></div>
+            <div class="chat-input-row">
+                <input id="chatAttachmentInput" type="file" multiple hidden>
+                <textarea id="chatInput" placeholder="Ask anything" rows="1" onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
+                <button id="attachFilesBtn" class="send-button attach-files-btn" type="button" title="Attach text or code files">📎</button>
+                <button id="sendButton" class="send-button" onclick="sendChat()">➡️ Send</button>
+                <button  class="send-button" onclick="sendDebugChat()">🔎 Debug</button>
+            </div>
+        </div>
+        <div id="showControlsBar" class="show-controls-bar mobile-only">
+            <button id="showControlsBtn" onclick="showDrawerBar()">▲ Control Panel</button>
+        </div>        
+    </div>
+    <div class="drawer-bar desktop-only">
+        <button onclick="toggleDrawer('modelDrawer')">⚙️ Model</button>
+        <button onclick="toggleDrawer('logsDrawer')">📜 Logs</button>
+        <button onclick="toggleDrawer('smiDrawer')">🖥️ GPU Monitor</button>
+        <button onclick="toggleDrawer('analyticsDrawer')">📊 Analytics</button>
+        <button onclick="toggleDrawer('importExportDrawer')">📤📥 Chats</button> 
+        {% if session.get('role') == 'admin' %}
+        <button onclick="toggleDrawer('benchmarksDrawer')">🧪 Benchmarks</button>
+        <button onclick="toggleDrawer('adminDrawer')">⚙️ Admin</button>
+        {% endif %}
+        <button id="toggleDrawerBarBtn" class="drawer-bar-toggle-btn" onclick="toggleDrawerBar()">
+            ▼ Hide Controls
+        </button>
+    </div>    
+
+    <!-- Model Drawer (all logged-in users can view Model Details; admin can control) -->
+    {% if session.get('user_id') %}
+    <div id="modelDrawer" class="drawer">
+    <div class="model-drawer-grid">
+
+        {% if session.get('role') == 'admin' %}
+        <div class="model-settings">
+        <DIV CLASS="drawer-header">
+            <h3>🧠 Model</h3>
+            <button class="drawer-close-btn" onclick="toggleDrawer('modelDrawer')">✖</button>
+        </DIV>
+
+        <div class="form-row" id="modelSortControlsWrapper">
+            <div class="form-row" id="modelSortControls">
+            <button type="button" class="sort-btn" id="sortNameAsc" title="Name A–Z">
+                <span>A-Z</span><span style="font-size:0.9em;">▲</span>
+            </button>
+            <button type="button" class="sort-btn" id="sortNameDesc" title="Name Z–A">
+                <span>Z-A</span><span style="font-size:0.9em;">▼</span>
+            </button>
+            <button type="button" class="sort-btn" id="sortSizeAsc" title="Size Smallest">
+                <span>Size</span><span style="font-size:0.9em;">▲</span>
+            </button>
+            <button type="button" class="sort-btn" id="sortSizeDesc" title="Size Largest">
+                <span>Size</span><span style="font-size:0.9em;">▼</span>
+            </button>
+
+            <button type="button" class="sort-btn" id="sortTPSAsc" title="Max TPS (Slowest)">
+                <span>Speed</span><span style="font-size:0.9em;">▲</span>
+            </button>
+            <button type="button" class="sort-btn" id="sortTPSDesc" title="Max TPS (Fastest)">
+                <span>Speed</span><span style="font-size:0.9em;">▼</span>
+            </button>
+            </div>
+        </div>
+
+        <!-- Model Selector -->
+        <div class="form-row">
+            <div class="form-label">Model:</div>
+
+            <div id="modelDropdown" class="dropdown-container">
+            <div id="dropdown-selected" class="dropdown-selected">Model | Max tokens/s | Size (GB)</div>
+            <div class="dropdown-list" id="dropdownList"></div>
+            </div>
+
+            <input type="hidden" id="modelSelect" name="modelSelect">
+        </div>
+
+        <!-- Parameters grid -->
+        <div class="params-grid">
+            <div class="form-row"><label for="nGpuLayers">🎮 GPU Layers:</label><input type="number" id="nGpuLayers" title="GPU Layers..."></div>
+            <div class="form-row cpu-only-row">
+                <label for="cpuOnlyToggle">🖥 CPU Only:</label>
+                <div class="switch-wrapper cpu-only-switch-wrapper">
+                    <label class="switch">
+                        <input type="checkbox" id="cpuOnlyToggle">
+                        <span class="slider"></span>
+                    </label>
+                    <span class="cpu-only-switch-label"></span>
+                </div>
+            </div>
+            <div class="form-row"><label for="nCpuThreads">⚙️ CPU Threads:</label><input type="number" id="nCpuThreads" title="CPU Threads..."></div>
+            <div class="form-row"><label for="temperature">🌡 Temperature:</label><input type="number" id="temperature" step="0.1" title="Temperature..."></div>
+            <div class="form-row"><label for="topK">🔢 Top-K:</label><input type="number" id="topK" title="Top-K..."></div>
+            <div class="form-row"><label for="topP">📊 Top-P:</label><input type="number" id="topP" step="0.1" title="Top-P..."></div>
+            <div class="form-row"><label for="repeatPenalty">🔁 Penalty:</label><input type="number" id="repeatPenalty" step="0.1" title="Repeat Penalty..."></div>
+            <div class="form-row"><label for="seed">🎲 Seed:</label><input type="number" id="seed" title="Seed..."></div>
+        </div>
+
+        <!-- Action buttons -->
+        <div class="button-row">
+            <button id="startModelBtn" class="start-model-btn" onclick="startModel()">🚀 Start Model</button>
+            <button class="stop-model-btn" onclick="stopModel()">🛑 Stop Model</button>
+        </div>
+        </div>
+        {% endif %}
+
+        <div class="model-details wide">
+            <h3>📊 Model Details</h3>
+
+        <p><b>Status:</b> <span id="modelStatusText">❌ Not Running</span></p>
+        <p><b>Current Model:</b> <span id="currentModel">N/A</span></p>
+        <p><b>Runtime Mode:</b> <span id="currentRuntimeMode" class="runtime-mode-indicator">-</span></p>
+        <p><b>GPU Layers:</b> <span id="currentGpuLayers">-</span></p>
+        <p><b>CPU Threads:</b> <span id="currentCpuThreads">-</span></p>
+        <p><b>Temperature:</b> <span id="currentTemperature">-</span></p>
+        <p><b>Top-K:</b> <span id="currentTopK">-</span></p>
+        <p><b>Top-P:</b> <span id="currentTopP">-</span></p>
+        <p><b>Repeat Penalty:</b> <span id="currentRepeatPenalty">-</span></p>
+        <p><b>Seed:</b> <span id="currentSeed">-</span></p>
+        </div>
+
+    </div>
+    </div>
+    {% endif %}
+
+    <!-- Logs Drawer -->
+    <div id="logsDrawer" class="drawer">
+        <div class="drawer-header">
+        📜 Logs
+        <button id="btnLogStart">▶️ Start Log Stream</button>
+        <button id="btnLogStop">⏹️ Stop Log Stream</button>
+        {% if session.get('role') == 'admin' %}<button id="btnLogClear">🗑️ Clear Logs</button>{% endif %}
+        <button class="drawer-close-btn" onclick="closeAllDrawers()">✖</button>
+        </div>
+        <pre id="logContent">Logs will appear here...</pre>
+    </div>
+    
+   <!-- GPU Monitor Drawer -->
+<div id="smiDrawer" class="drawer">
+    <div class="drawer-header">
+        🖥️ GPU Monitor
+        <span id="smiDrawerTitle" style="opacity:.7;margin-left:8px;">Monitor Idle</span>
+
+        <button id="btnSmiPoll">🔄 Start Monitor</button>
+        <button id="btnSmiStop">⏹️ Stop</button>
+        <button id="btnSmiCopy">📋 Copy Output</button>
+
+        <button class="drawer-close-btn" onclick="closeAllDrawers()">✖</button>
+    </div>
+
+    <div class="gpu-stats-section" style="display:none;">
+        <div class="gpu-overview-header">
+            <div class="gpu-overview-left">
+                <h3>GPU Overview</h3>
+                <span id="smiTimestamp" class="gpu-updated-at">Waiting for data…</span>
+            </div>
+
+            <div class="gpu-overview-right">
+                <div class="gpu-power-card">
+                    <div class="gpu-power-label">Total Power</div>
+                    <div id="powerUsage" class="gpu-power-value">—</div>
+                </div>
+            </div>
+        </div>
+
+        <div id="gpuCards" class="gpu-cards"></div>
+
+        <div class="gpu-process-panel">
+            <h3>Running GPU Processes</h3>
+            <div id="processList"></div>
+        </div>
+
+        <details class="smi-raw-details">
+            <summary id="smiRawSummary">Show GPU telemetry output</summary>
+            <pre id="smiContent">Click "Start Monitoring" to load GPU telemetry output…</pre>
+        </details>
+    </div>
+</div>
+
+    <!-- Analytics Drawer -->
+    <div id="analyticsDrawer" class="drawer">
+        <div class="drawer-header">
+            📊 Analytics
+            <button class="drawer-close-btn" onclick="closeAllDrawers()">✖</button>
+        </div>
+        <div class="analytics-content">
+            <div class="refresh-notice">Includes all generated responses, including regenerate and edit variants.</div>
+            <pre id="analyticsDashboard">Loading analytics...</pre>
+          
+        </div>
+        
+    </div>
+
+    <!-- Chat History Export/Import & Clear Drawer -->
+    <div id="importExportDrawer" class="drawer">
+        <div class="drawer-header">
+            📤📥 Chat History
+            <button class="drawer-close-btn" onclick="closeAllDrawers()">✖</button>
+        </div>
+        <div class="drawer-scroll-content">
+            <div class="chat-history-form">
+                <h3>Export Chat History</h3>
+                <div class="form-row">
+                    <label for="exportFormat">Format:</label>
+                    <select id="exportFormat">
+                        <option value="json">JSON</option>
+                        <option value="csv">CSV</option>
+                        <option value="markdown">Markdown</option>
+                    </select>
+                </div>
+                <button onclick="exportChatHistory()">Export</button>
+                <hr>
+                <h3>Import Chat History (json/csv)</h3>
+                <div class="form-row">
+                    <label for="importConflict">Conflict Resolution:</label>
+                    <select id="importConflict">
+                        <option value="append">Append</option>
+                        <option value="overwrite">Overwrite</option>
+                    </select>
+                </div>
+                <div class="form-row">
+                    <input type="file" id="importFile">
+                </div>
+                <button onclick="importChatHistory()">Import</button>
+                <hr>
+                <h3 style="color:red;">Clear Chat History</h3>
+                <button id="clearChatHistoryBtn" style="background-color:red; color:white;" onclick="clearChatHistory()">Clear Chat History</button>
+            </div>
+            {% if session.get('role') == 'admin' %}
+            <div class="admin-container">
+              <h2>Admin: User Chat Management</h2>
+          
+              <form class="add-user-form" onsubmit="event.preventDefault();">
+                <button type="button" onclick="adminLoadChatUsers()">Load Users With Chats</button>
+                <button type="button" onclick="adminExportChats(true)">Export ALL Users</button>
+                <button type="button" class="user-action-btn" onclick="adminDeleteAllChats()">Delete ALL Chats</button>
+              </form>
+          
+              <table class="responsive-table" id="adminChatsTable" style="display:none;">
+                <thead>
+                  <tr>
+                    <th>User ID</th>
+                    <th>Tokens</th>
+                    <th>Rows</th>
+                    <th>Sessions</th>
+                    <th>Last Timestamp</th>
+                    <th class="actions-cell">Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="adminChatsTableBody"></tbody>
+              </table>
+          
+              <pre id="adminChatUsersOut" class="admin-pre" style="display:none;"></pre>
+            </div>
+          {% endif %}
+        </div>
+    </div>
+
+<!-- Benchmarks Drawer (Admin only) -->
+{% if session.get('role') == 'admin' %}
+<div id="benchmarksDrawer" class="drawer">
+    <div class="drawer-header">
+        🧪 Benchmarks
+        <button class="drawer-close-btn" onclick="closeAllDrawers()">✖</button>
+    </div>
+
+    <div class="benchmarks-content" style="padding:12px;">
+
+        <!-- STATUS -->
+        <div style="margin-bottom:10px;">
+            <div><b>Status:</b> <span id="benchStatusLine">idle</span></div>
+            <div id="benchMessageLine" style="margin-top:6px; opacity:.95;"></div>
+            <div id="benchCountsLine" style="margin-top:6px; opacity:.8;"></div>
+            <div id="benchStartedLine" style="margin-top:6px; opacity:.6;"></div>
+            <div id="benchEndedLine" style="margin-top:6px; opacity:.6;"></div>
+        </div>
+
+        <!-- CONTROLS -->
+        <div class="bench-controls-row">
+            <label style="display:flex; gap:6px; align-items:center;">
+                <input type="checkbox" id="benchForceCheckbox">
+                Force re-run
+            </label>
+
+            <button id="benchRunBtn" class="start-model-btn" type="button">
+                Run Benchmark
+            </button>
+            <button id="benchStopBtn" type="button">
+                Stop
+            </button>
+            <button id="benchRefreshBtn" type="button">Refresh</button>
+        </div>
+
+        <!-- PROGRESS -->
+        <div style="margin-bottom:10px;">
+            <div style="display:flex; justify-content:space-between; gap:10px;">
+                <div id="benchModel">Model: —</div>
+                <div id="benchPromptProgress">Prompt: 0/0</div>
+                <div id="benchProgressPct">0%</div>
+            </div>
+
+            <div style="width:100%; margin-top:6px; height:14px; background:rgba(255,255,255,0.08); border-radius:10px; overflow:hidden;">
+                <div id="benchProgressFill"
+                     style="height:100%; width:0%; background:rgba(46,204,113,0.85); transition:width .3s;"></div>
+            </div>
+        </div>
+
+        <hr style="opacity:.2;">
+
+        <!-- Benchmark Questions Editor -->
+
+        <div class="bench-prompt-editor">
+            <div class="bench-prompt-editor-head">
+                <div>
+                    <h3>CE Benchmark Questions</h3>
+                    <div class="bench-prompt-editor-subtitle">These 5 prompts are used for benchmark runs. Defaults test practical reasoning, troubleshooting, explanation quality, planning, and uncertainty handling.</div>
+                </div>
+                <button id="benchPromptsSaveBtn" type="button" class="bench-prompts-save-btn">Save Questions</button>
+            </div>
+            <div id="benchPromptEditorStatus" class="bench-prompt-editor-status"></div>
+            <div id="benchPromptEditorList" class="bench-prompt-editor-list">
+                <div class="bench-prompt-editor-empty">Loading benchmark questions...</div>
+            </div>
+        </div>
+
+        <!-- TABLE -->
+        <h3 style="margin:10px 0;">Best run per model</h3>
+        <div class="table-wrap">
+            <table id="benchBestTable" class="u-full-width">
+                <thead>
+                    <tr>
+                        <th title="Is this model currently present in the scan directory?">Present</th>
+                        <th>Status</th>
+                        <th>Model</th>
+                        <th>Size (GB)</th>
+                        <th>Avg TPS</th>
+                        <th>Min/Max TPS</th>
+                        <th>Tokens</th>
+                        <th>Total</th>
+                        <th>Ended</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="benchBestTbody">
+                    <tr><td colspan="10">Loading…</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- DETAILS -->
+        <div id="benchDetails" class="bench-details-render"></div>
+
+    </div>
+</div>
+{% endif %}
+
+<!-- Admin Drawer -->
+{% if session.get('role') == 'admin' %}
+<div id="adminDrawer" class="drawer">
+    <div class="admin-drawer-header">
+        <span>⚙️ Admin Settings</span>
+        <button class="drawer-close-btn" onclick="closeAllDrawers()">✖</button>
+    </div>
+    <div class="admin-settings-panel">
+        <input type="hidden" id="adminCsrfToken" value="{{ csrf_token() }}">
+        <div class="params-grid">
+            <div class="form-row">
+              <label for="versionDisplay">Software Version:</label>
+              <input type="text" id="versionDisplay" readonly>
+            </div>
+        </div>
+        <div style="margin-top:8px; opacity:0.8; font-size:0.92em;">
+            Modify system bootstrap config at: <code>{{ bootstrap_config_path }}</code>
+        </div>
+
+        <hr>
+
+        <h3>Bootstrap Database</h3>
+        <div class="params-grid">
+            <div class="form-row">
+              <label for="dbHostInput">MySQL Host:</label>
+              <input type="text" id="dbHostInput">
+            </div>
+            <div class="form-row">
+              <label for="dbPortInput">MySQL Port:</label>
+              <input type="number" id="dbPortInput" min="1" max="65535">
+            </div>
+        </div>
+
+        <hr>
+
+        <h3>Model Management</h3>
+            <div class="params-grid">
+            <div class="form-row">
+                <label>Add GGUF models to the configured Models DIR, then rescan.</label>
+                
+            </div>
+            <div class="form-row">
+                <button type="button" id="adminRescanModelsBtn" class="start-model-btn">🔄 Rescan Models</button>
+            </div>
+            </div>
+
+            <hr>
+
+            <h3>Model Registry</h3>
+
+            <!-- Registry controls -->
+            <div class="params-grid">
+            <div class="form-row">
+                <label>&nbsp;</label>
+                <button type="button" id="adminRegistryRefreshBtn" class="start-model-btn">🔃 Refresh Registry</button>
+            </div>
+
+            <div class="form-row">
+                <label>&nbsp;</label>
+                <button type="button" id="adminRegistryEnableAllBtn" class="start-model-btn">✅ Enable All</button>
+            </div>
+
+            <div class="form-row">
+                <label>&nbsp;</label>
+                <button type="button" id="adminRegistryDisableAllBtn" class="start-model-btn">🚫 Disable All</button>
+            </div>
+
+            <div class="form-row">
+                <div id="adminRegistryStatus" style="opacity:0.9; font-size:0.95em;"></div>
+            </div>
+            </div>
+
+            <!-- Registry list -->
+            <div class="table-wrap" style="margin-top:10px;">
+            <table class="u-full-width" id="adminRegistryTable">
+                <thead>
+                    <tr>
+                        <th>🚦</th>
+                        <th style="width: 150px;">Filename</th>
+                        <th>Size (GB)</th>
+                        <th>File Date</th>
+                        <th>Actions</th>
+                    </tr>
+                  </thead>                                  
+                <tbody id="adminRegistryTbody"></tbody>
+            </table>
+            </div>
+
+            <hr>
+
+        <h3>Model Default Settings</h3>
+
+        <div class="params-grid">
+            <div class="form-row">
+              <label for="llamaServerPathInput">Llama-server Path:</label>
+              <input type="text" id="llamaServerPathInput">
+            </div>
+            <div class="form-row">
+              <label for="llamaMainPortInput">Llama Main Port:</label>
+              <input type="number" id="llamaMainPortInput" min="1" max="65535">
+            </div>
+            <div class="form-row">
+              <label for="llamaTitlePortInput">Llama Title Port:</label>
+              <input type="number" id="llamaTitlePortInput" min="1" max="65535">
+            </div>
+            <div class="form-row">
+              <label for="scanDirectoryInput">Models DIR:</label>
+              <input type="text" id="scanDirectoryInput">
+            </div>
+            <div class="form-row">
+              <label for="defaultGpuLayers">GPU Layers:</label>
+              <input type="number" id="defaultGpuLayers">
+            </div>
+            <div class="form-row">
+              <label for="defaultCpuThreads">CPU Threads:</label>
+              <input type="number" id="defaultCpuThreads">
+            </div>
+            <div class="form-row">
+              <label for="dualGpuSplitThresholdGb">GPU Split Threshold (GB):</label>
+              <input type="number" id="dualGpuSplitThresholdGb" min="0">
+            </div>
+            <div class="form-row">
+              <label for="defaultTemperature">Temperature:</label>
+              <input type="number" id="defaultTemperature" step="0.1">
+            </div>
+            <div class="form-row">
+              <label for="defaultTopK">Top-K:</label>
+              <input type="number" id="defaultTopK">
+            </div>
+            <div class="form-row">
+              <label for="defaultTopP">Top-P:</label>
+              <input type="number" id="defaultTopP" step="0.1">
+            </div>
+            <div class="form-row">
+              <label for="defaultRepeatPenalty">Repeat Penalty:</label>
+              <input type="number" id="defaultRepeatPenalty" step="0.1">
+            </div>
+            <div class="form-row">
+              <label for="defaultSeed">Seed:</label>
+              <input type="number" id="defaultSeed">
+            </div>
+        </div>
+
+        <hr>
+
+        <h3>Attachment Settings</h3>
+
+        <div class="params-grid">
+            <div class="form-row">
+              <label for="attachmentMaxFiles">Max attachments per message:</label>
+              <input type="number" id="attachmentMaxFiles">
+            </div>
+            <div class="form-row">
+              <label for="attachmentMaxFileBytes">Max file size per attachment (bytes):</label>
+              <input type="number" id="attachmentMaxFileBytes">
+            </div>
+            <div class="form-row">
+              <label for="attachmentMaxTotalBytes">Max total attachment size (bytes):</label>
+              <input type="number" id="attachmentMaxTotalBytes">
+            </div>
+            <div class="form-row">
+              <label for="attachmentMaxContextChars">Max attachment context characters:</label>
+              <input type="number" id="attachmentMaxContextChars">
+            </div>
+            <div class="form-row">
+              <label for="attachmentChunkMaxLines">Attachment chunk max lines:</label>
+              <input type="number" id="attachmentChunkMaxLines">
+            </div>
+            <div class="form-row">
+              <label for="attachmentChunkOverlapLines">Attachment chunk overlap lines:</label>
+              <input type="number" id="attachmentChunkOverlapLines">
+            </div>
+        </div>
+
+        <hr>
+
+        <h3>Auth Email Settings</h3>
+        <div id="authReadinessPanel" style="margin: 8px 0 14px 0; padding: 10px; border: 1px solid rgba(255,255,255,0.14); border-radius: 8px; font-size: 0.95em;"></div>
+        <div class="params-grid">
+            <div class="form-row">
+              <label for="authSmtpEnabled">SMTP Enabled:</label>
+              <input type="checkbox" id="authSmtpEnabled" style="width:auto;">
+            </div>
+            <div class="form-row">
+              <label for="authSmtpHost">SMTP Host:</label>
+              <input type="text" id="authSmtpHost" autocomplete="off">
+            </div>
+            <div class="form-row">
+              <label for="authSmtpPort">SMTP Port:</label>
+              <input type="number" id="authSmtpPort" min="1" max="65535">
+            </div>
+            <div class="form-row">
+              <label for="authSmtpUseTls">Use STARTTLS:</label>
+              <input type="checkbox" id="authSmtpUseTls" style="width:auto;">
+            </div>
+            <div class="form-row">
+              <label for="authSmtpUsername">SMTP Username:</label>
+              <input type="text" id="authSmtpUsername" autocomplete="off">
+            </div>
+            <div class="form-row">
+              <label for="authSmtpPassword">SMTP Password:</label>
+              <input type="password" id="authSmtpPassword" autocomplete="new-password" placeholder="Leave blank to keep existing password">
+            </div>
+            <div class="form-row">
+              <label for="authSmtpFromEmail">From Email:</label>
+              <input type="email" id="authSmtpFromEmail" autocomplete="off">
+            </div>
+            <div class="form-row">
+              <label for="authPublicBaseUrl">Public Base URL:</label>
+              <input type="url" id="authPublicBaseUrl" placeholder="https://example.com">
+            </div>
+            <div class="form-row">
+              <label for="authResetTokenTtl">Reset token TTL (minutes):</label>
+              <input type="number" id="authResetTokenTtl" min="1" max="10080">
+            </div>
+            <div class="form-row">
+              <label for="authConfirmTokenTtl">Confirmation token TTL (minutes):</label>
+              <input type="number" id="authConfirmTokenTtl" min="1" max="43200">
+            </div>
+            <div class="form-row">
+              <label for="authEmailCooldown">Email request cooldown (seconds):</label>
+              <input type="number" id="authEmailCooldown" min="1" max="3600">
+            </div>
+        </div>
+
+        <hr>
+        <div class="button-row">
+            <button id="saveSettingsBtn" class="start-model-btn">💾 Save Settings</button>
+            <button id="exportSettingsBackupBtn" class="start-model-btn" type="button" onclick="exportSettingsBackup()">⬇️ Export Settings Backup</button>
+        </div>
+        <p class="refresh-notice">Refresh the page after saving to apply changes.</p>
+    </div>
+</div>
+{% endif %}
+
+<!-- About Modal Overlay (Hidden by default) -->
+{% set about_version = version %}
+{% include "_about_modal.html" %}
+
+<!-- User Settings -->
+  <div class="settings-modal-overlay" id="userSettingsModal" style="display:none;">
+    <div class="user-modal-card">
+      <button class="user-close-btn" onclick="toggleUserSettingsModal(false)">✖</button>
+      <h3>Account Settings</h3>
+      <form id="changeEmailForm">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <label>Request Email Change:<br>
+          <input type="email" name="new_email" required placeholder="New Email">
+        </label>
+        <label>Current Password:<br>
+          <input type="password" name="current_password" required autocomplete="current-password" placeholder="Current Password">
+        </label>
+        <div class="muted-note">Your current email remains active until the new address is confirmed.</div>
+        <button type="submit" class="btn save-btn">Change Email</button>
+        <div id="change-email-alert"></div>
+      </form>
+      <hr>
+      <form id="changePasswordForm">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <label>Current Password:<br>
+          <input type="password" name="old_password" required autocomplete="current-password">
+        </label>
+        <label>New Password:<br>
+            <input type="password" name="new_password" id="user-new-password" required autocomplete="new-password"
+            data-minlength="{{ settings.password_policy.min_length }}"
+            data-upper="{{ 'true' if settings.password_policy.require_upper else 'false' }}"
+            data-lower="{{ 'true' if settings.password_policy.require_lower else 'false' }}"
+            data-digit="{{ 'true' if settings.password_policy.require_digit else 'false' }}"
+            data-special="{{ 'true' if settings.password_policy.require_special else 'false' }}"
+          >
+          <div id="password-requirements" class="pw-req-list"></div>
+            <div id="pw-match-alert" class="pw-match-alert"></div>
+        </label>
+        <label>Repeat New Password:<br>
+          <input type="password" name="new_password2" required autocomplete="new-password">
+        </label>
+        <button type="submit" class="btn save-btn">Change Password</button>
+        <div id="change-password-alert"></div>
+      </form>
+    </div>
+  </div>
+    
+<script>
+    /* Called on every key press (except Enter) to keep the textarea height in sync */
+    function handleKey(e){
+        if (e.key === 'Enter' && !e.shiftKey){   // send message
+            e.preventDefault();                  // stop normal newline insert
+            sendChat();
+        }
+    }
+
+    /* Auto‑grow logic – keeps height ≤ max-height and shows scrollbar when needed  */
+    function autoResize(el) {
+        const MAX_HEIGHT = parseInt(getComputedStyle(el).maxHeight,10);   // 120px
+
+        el.style.height = 'auto';                     /* reset so scrollHeight recalculates     */
+
+        if (el.scrollHeight > MAX_HEIGHT){
+            el.style.overflowY = 'auto';
+            el.style.height = `${MAX_HEIGHT}px`;
+        } else {
+            el.style.overflowY = 'hidden';
+            el.style.height = `${el.scrollHeight}px`;
+        }
+    }
+    function adminExportChats(allUsers) {
+        const format = document.getElementById("exportFormat")?.value || "json";
+
+        let url = '/analytics/admin_export_chats?format=' + encodeURIComponent(format);
+
+        // legacy: if you still have an input in some older markup, allow it
+        if (!allUsers) {
+            const uid = (document.getElementById("adminChatUserId")?.value || "").trim();
+            if (!uid) { showCustomAlert("Enter a User ID first."); return; }
+            url += '&user_id=' + encodeURIComponent(uid);
+        }
+
+        window.location.href = url;
+        }
+
+        function fmtNumber(n) {
+            const x = Number(n || 0);
+            return x.toLocaleString();
+            }
+
+            function formatUnixTimestamp(ts) {
+                // Accept seconds or milliseconds (and string numbers)
+                const n = Number(ts);
+                if (!Number.isFinite(n) || n <= 0) return "—";
+
+                const ms = (n > 1e12) ? n : (n * 1000); // > 1e12 is almost certainly ms already
+                const d = new Date(ms);
+                if (isNaN(d.getTime())) return "—";
+
+                // Local readable
+                return d.toLocaleString(undefined, {
+                    year: "numeric",
+                    month: "short",
+                    day: "2-digit",
+                    hour: "2-digit",
+                    minute: "2-digit"
+                });
+            }
+
+            function adminLoadChatUsers() {
+            fetch('/analytics/admin_user_token_totals', { credentials: 'same-origin' })
+                .then(r => r.json())
+                .then(data => {
+                if (!data || data.status !== "success") {
+                    showCustomAlert("Failed to load token totals.");
+                    return;
+                }
+
+                const table = document.getElementById("adminChatsTable");
+                const tbody = document.getElementById("adminChatsTableBody");
+                if (!table || !tbody) return;
+
+                tbody.innerHTML = "";
+
+                data.users.forEach(u => {
+                    const tr = document.createElement("tr");
+
+                    tr.innerHTML = `
+                    <td>${u.user_id}</td>
+                    <td>${fmtNumber(u.total_tokens)}</td>
+                    <td>${u.rows}</td>
+                    <td>${u.sessions}</td>
+                    <td>${formatUnixTimestamp(u.last_timestamp)}</td>
+                    <td class="actions-cell">
+                        <button class="user-action-btn" type="button" onclick="adminExportUserChats(${u.user_id})">Export</button>
+                        <button class="user-action-btn" type="button" onclick="adminDeleteUserChatsById(${u.user_id})">Delete</button>
+                    </td>
+                    `;
+
+                    tbody.appendChild(tr);
+                });
+
+                table.style.display = "";
+                })
+                .catch(e => showCustomAlert("Failed to load token totals: " + e));
+            }
+
+            function adminExportUserChats(userId) {
+            const format = document.getElementById("exportFormat")?.value || "json";
+            const url = '/analytics/admin_export_chats?format=' + encodeURIComponent(format) + '&user_id=' + encodeURIComponent(userId);
+            window.location.href = url;
+            }
+
+            function adminDeleteUserChatsById(userId) {
+            if (!confirm("Delete ALL chats for user " + userId + "?")) return;
+
+            fetch('/analytics/admin_delete_user_chats', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-CSRFToken': window.CSRF_TOKEN },
+                body: JSON.stringify({ user_id: parseInt(userId, 10) }),
+                credentials: 'same-origin'
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.status === "success") {
+                showCustomAlert("Deleted " + data.deleted_rows + " rows for user " + data.user_id);
+                adminLoadChatUsers(); // refresh table
+                loadChatHistory();    // refresh sidebar list if you want
+                } else {
+                showCustomAlert("Delete failed: " + (data.message || "Unknown error"));
+                }
+            })
+            .catch(e => showCustomAlert("Delete failed: " + e));
+        }
+
+        function renderAdminChatUsersTable(users) {
+            const table = document.getElementById("adminChatsTable");
+            const tbody = document.getElementById("adminChatsTableBody");
+
+            if (!table || !tbody) {
+                const out = document.getElementById('adminChatUsersOut');
+                if (out) {
+                out.style.display = "";
+                out.textContent = JSON.stringify({ users }, null, 2);
+                }
+                return;
+            }
+
+            tbody.innerHTML = "";
+
+            if (!users || users.length === 0) {
+                table.style.display = "none";
+                showCustomAlert("No users with chats found.");
+                return;
+            }
+
+            users.sort((a, b) => (b.last_timestamp || 0) - (a.last_timestamp || 0));
+
+            for (const u of users) {
+                const userId = u.user_id ?? "";
+                const rows = u.rows ?? 0;
+                const sessions = u.sessions ?? 0;
+
+                const rawTs = u.last_timestamp ?? null;
+                const prettyTs = formatUnixTimestamp(rawTs);
+
+                const tr = document.createElement("tr");
+                tr.innerHTML = `
+                <td>${userId}</td>
+                <td>${rows}</td>
+                <td>${sessions}</td>
+                <td title="${rawTs ?? ''}" data-ts="${rawTs ?? ''}">${prettyTs}</td>
+                <td class="actions-cell">
+                    <button type="button" onclick="adminExportUserChats(${userId})">Export</button>
+                    <button type="button" class="user-action-btn" onclick="adminDeleteUserChatsById(${userId})">Delete</button>
+                </td>
+                `;
+                tbody.appendChild(tr);
+            }
+
+            table.style.display = "";
+        }
+
+
+        function adminDeleteAllChats() {
+        if (!confirm("Delete ALL chats for ALL users? This cannot be undone.")) return;
+
+        fetch('/analytics/admin_delete_all_chats', {
+            method: 'POST',
+            headers: { 'X-CSRFToken': window.CSRF_TOKEN },
+            credentials: 'same-origin'
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.status === "success") {
+            showCustomAlert("Deleted " + (data.deleted_rows ?? 0) + " rows.");
+            // refresh admin table + sidebar
+            adminLoadChatUsers();
+            if (typeof loadChatHistory === "function") loadChatHistory();
+            const msg = document.getElementById("chatMessages");
+            if (msg) msg.innerHTML = "";
+            } else {
+            showCustomAlert("Delete failed: " + (data.message || "Unknown error"));
+            }
+        })
+        .catch(e => showCustomAlert("Delete failed: " + e));
+        }
+
+    function exportChatHistory() {
+            const format = document.getElementById("exportFormat").value;
+            window.location.href = 'analytics/export_chats?format=' + format;
+        }
+    function importChatHistory() {
+        const fileInput = document.getElementById("importFile");
+        const conflict = document.getElementById("importConflict").value;
+        const file = fileInput.files[0];
+        if (!file) {
+            showCustomAlert("No file selected!");
+            return;
+        }
+
+        const formData = new FormData();
+        formData.append("import_file", file);
+        formData.append("conflict_resolution", conflict);
+
+        // Add CSRF token, which Flask CSRFProtect expects in either form body or as header
+        formData.append("csrf_token", window.CSRF_TOKEN);
+
+        fetch("/analytics/import_chats", {
+            method: "POST",
+            body: formData,
+            credentials: "same-origin"
+            // Note: do NOT set Content-Type for FormData!
+        })
+        .then(async res => {
+        // Try to parse as JSON, but handle possible text (like server error pages)
+        try {
+            const data = await res.json();
+            if (data.status === "success") {
+            showCustomAlert("Import successful!");
+            loadChatHistory();
+            } else {
+            showCustomAlert("Import error: " + (data.message || "Unknown error"));
+            }
+        } catch (e) {
+            showCustomAlert("Import error: (Invalid response) " + res.statusText);
+        }
+            })
+            .catch(e => showCustomAlert("Import error: " + e));
+        }
+
+        function clearChatHistory() {
+            if (!confirm("Are you sure you want to clear all chat history? This cannot be undone.")) return;
+            fetch('/analytics/delete_all_chats', {
+                method: "POST",
+                headers: {
+                'X-CSRFToken': window.CSRF_TOKEN
+                }
+            })
+                .then(response => response.json())
+                .then(data => {
+                if (data.status === "success") {
+                    showCustomAlert("All chat history deleted.");
+                    loadChatHistory(); // <-- This reloads the sidebar
+                    document.getElementById("chatMessages").innerHTML = ""; // Optionally clear messages too
+                } else {
+                    showCustomAlert("Failed to clear chat history.");
+                }
+                })
+                .catch(err => {
+                showCustomAlert("Error clearing chat history: " + err.message);
+                });
+            }
+            document.addEventListener('keydown', function(e) {
+            if (e.key === "Escape") {
+                if (typeof closeAllDrawers === "function") {
+                    closeAllDrawers();
+                }
+            }
+            });
+            function getPasswordPolicyFromInput(input) {
+            return {
+                min_length: parseInt(input.dataset.minlength),
+                require_upper: input.dataset.upper === "true",
+                require_lower: input.dataset.lower === "true",
+                require_digit: input.dataset.digit === "true",
+                require_special: input.dataset.special === "true"
+            };
+        }
+
+        function checkPasswordRequirements(password, policy) {
+            return {
+                min_length: password.length >= policy.min_length,
+                require_upper: !policy.require_upper || /[A-Z]/.test(password),
+                require_lower: !policy.require_lower || /[a-z]/.test(password),
+                require_digit: !policy.require_digit || /\d/.test(password),
+                require_special: !policy.require_special || /[^A-Za-z0-9]/.test(password)
+            };
+        }
+
+        function renderPasswordRequirements(checks, policy) {
+            const reqs = [];
+            reqs.push(`<li class="${checks.min_length ? 'pass' : ''}">At least ${policy.min_length} characters</li>`);
+            if (policy.require_upper)
+                reqs.push(`<li class="${checks.require_upper ? 'pass' : ''}">At least 1 uppercase letter</li>`);
+            if (policy.require_lower)
+                reqs.push(`<li class="${checks.require_lower ? 'pass' : ''}">At least 1 lowercase letter</li>`);
+            if (policy.require_digit)
+                reqs.push(`<li class="${checks.require_digit ? 'pass' : ''}">At least 1 digit</li>`);
+            if (policy.require_special)
+                reqs.push(`<li class="${checks.require_special ? 'pass' : ''}">At least 1 special character</li>`);
+            return `<ul>${reqs.join('')}</ul>`;
+        }
+
+        (function setupPasswordRequirements() {
+        const pwInput = document.getElementById('user-new-password');
+        const pw2Input = document.querySelector('input[name="new_password2"]');
+        const reqBox = document.getElementById('password-requirements');
+        const matchAlert = document.getElementById('pw-match-alert');
+        if (!pwInput || !reqBox) return;
+
+        const policy = getPasswordPolicyFromInput(pwInput);
+
+        function updateUI() {
+            const pw = pwInput.value;
+            const checks = checkPasswordRequirements(pw, policy);
+            reqBox.innerHTML = renderPasswordRequirements(checks, policy);
+
+            // Simple feedback for password match
+            if (pw2Input && pw2Input.value.length > 0) {
+            if (pw === pw2Input.value) {
+                matchAlert.textContent = "✅ Passwords match!";
+                matchAlert.className = "pw-match-alert success";
+            } else {
+                matchAlert.textContent = "Passwords do not match";
+                matchAlert.className = "pw-match-alert error";
+            }
+            } else {
+            matchAlert.textContent = "";
+            matchAlert.className = "pw-match-alert";
+            }
+        }
+
+        pwInput.addEventListener('input', updateUI);
+        if (pw2Input) pw2Input.addEventListener('input', updateUI);
+
+        updateUI();
+        })();
+
+        window.CSRF_TOKEN = "{{ csrf_token() }}";
+        
+        window.addEventListener('resize', function() {
+            const drawerBar = document.querySelector('.drawer-bar');
+            // Adjust 1080 to your mobile breakpoint
+            if (window.innerWidth > 1080) {
+                drawerBar.classList.remove('hidden');
+                drawerBar.style.display = ''; // fallback to CSS default
+            }
+        });
+
+    </script>  
+</body>
+</html>
