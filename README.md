@@ -18,8 +18,8 @@ It is not just a benchmark tool.
 
 **LLM Controller CE** is the Community Edition foundation of LLM Controller — built to make self-hosted local model operation feel like a real product.
     </td>
-    <td valign="top" align="center" width="440">
-      <img src="docs/images/hero-screenshot.png" alt="LLM Controller CE chat interface screenshot" width="420">
+    <td valign="top" align="center" width="380">
+      <img src="docs/images/hero-screenshot.png" alt="LLM Controller CE chat interface screenshot" width="360">
     </td>
   </tr>
 </table>
