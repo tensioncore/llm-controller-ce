@@ -1,8 +1,8 @@
-<table style="border: 0px;">
-  <tr style="border: 0px;">
-    <td style="border: 0px;">
+<table>
+  <tr>
+    <td valign="top">
       
-<IMG SRC="static/LLM-Controller-LOGO.png" WIDTH="75px">
+<img src="static/LLM-Controller-LOGO.png" alt="LLM Controller CE logo" width="75">
 
 # LLM Controller CE
 
@@ -18,8 +18,8 @@ It is not just a benchmark tool.
 
 **LLM Controller CE** is the Community Edition foundation of LLM Controller — built to make self-hosted local model operation feel like a real product.
     </td>
-    <td>
-      <img src="docs/images/hero-screenshot.png" alt="Hero Screenshot" width="420">
+    <td valign="top" align="center" width="440">
+      <img src="docs/images/hero-screenshot.png" alt="LLM Controller CE chat interface screenshot" width="420">
     </td>
   </tr>
 </table>
