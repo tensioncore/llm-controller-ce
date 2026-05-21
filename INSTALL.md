@@ -1,6 +1,6 @@
 # INSTALL.md
 
-# LLM Controller CE — Install Notes
+# LLM Controller CE — Installation Guide
 
 LLM Controller CE uses a first-run web installer.
 
