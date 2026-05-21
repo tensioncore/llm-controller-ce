@@ -1,7 +1,6 @@
 # INSTALL.md
 
-# LLM Controller CE — Install Notes
-
+# LLM Controller CE — Installation Guide
 LLM Controller CE uses a first-run web installer.
 
 ## Requirements
@@ -83,6 +82,8 @@ sudo apt install -y python3 python3-pip python3-venv mysql-server
 Create and activate a Python virtual environment:
 
 ```bash
+sudo mkdir -p /srv/llmcontroller
+sudo chown -R "$USER":"$USER" /srv/llmcontroller
 cd /srv/llmcontroller
 python3 -m venv venv
 source venv/bin/activate
