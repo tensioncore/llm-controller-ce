@@ -1,8 +1,8 @@
-<table>
-  <tr>
-    <td valign="top">
+<table style="border: 0px;">
+  <tr style="border: 0px;">
+    <td style="border: 0px;">
       
-<img src="static/LLM-Controller-LOGO.png" alt="LLM Controller CE logo" width="75">
+<IMG SRC="static/LLM-Controller-LOGO.png" WIDTH="75px">
 
 # LLM Controller CE
 
@@ -18,15 +18,15 @@ It is not just a benchmark tool.
 
 **LLM Controller CE** is the Community Edition foundation of LLM Controller — built to make self-hosted local model operation feel like a real product.
     </td>
-    <td valign="top" align="center" width="380">
-      <img src="docs/images/hero-screenshot.png" alt="LLM Controller CE chat interface screenshot" width="360">
+    <td>
+      <img src="docs/images/hero-screenshot.png" alt="Hero Screenshot" width="420">
     </td>
   </tr>
 </table>
 
 ---
 
-![GPU Monitor Placeholder](docs/images/llm-controller-hero.png)
+![LLM Controller CE Overview](docs/images/llm-controller-hero.png)
 
 ## 🚀 Why LLM Controller CE?
 
@@ -54,17 +54,17 @@ It combines the operational side and the everyday usage side of local GGUF model
 ### 💬 Persistent Chat Workspace
 Stream responses live, stop generation mid-stream, regenerate the latest answer, edit the latest prompt, and keep conversations organized through saved chat sessions with auto-generated titles.
 
-![Chat Screenshot Placeholder](docs/images/chat-screenshot.png)
+![LLM Controller CE Chat Interface](docs/images/chat-screenshot.png)
 
 ### 🧠 Reasoning-Aware Responses
 When a model returns reasoning content, the interface can expose it with a dedicated show/hide workflow instead of burying it behind raw output.
 
-![Thoughts Screenshot Placeholder](docs/images/thoughts-screenshot.png)
+![Reasoning Display](docs/images/thoughts-screenshot.png)
 
 ### 🎛 Managed Model Library
 Scan a configured model directory for GGUF files, maintain a registry of available models, recognize complete split model sets, load and stop models, save runtime defaults, mark favorites, enable or disable entries, and control which models are allowed in benchmarks.
 
-![Model Drawer Placeholder](docs/images/model-drawer.png)
+![Model Library Drawer](docs/images/model-drawer.png)
 
 ### 📎 File-Aware Conversations
 Attach supported text-based files directly to prompts. LLM Controller CE applies server-side limits, chunks supported text content, and adds attachment context to the model request.
@@ -72,22 +72,22 @@ Attach supported text-based files directly to prompts. LLM Controller CE applies
 ### 📈 Benchmarks
 Run administrator-controlled benchmarks across eligible models, edit the benchmark prompt set, review best-run summaries, inspect detailed saved outputs, and clearly distinguish current results from stale ones after prompt changes.
 
-![Benchmark Screenshot Placeholder](docs/images/benchmark.png)
+![Benchmark Dashboard](docs/images/benchmark.png)
 
 ### 🖥 Runtime Visibility
 Watch live `llama-server` logs, runtime status, active process visibility, GPU telemetry where available, and per-model analytics without needing a separate dashboard.
 
-![Observability Screenshot Placeholder](docs/images/logs.png)
+![Logs and Runtime Visibility](docs/images/logs.png)
 
 ### 📊 GPU Monitor
 The GPU Monitor supports NVIDIA and AMD telemetry paths where local tools such as `nvidia-smi`, `rocm-smi`, or `rocminfo` are installed and compatible with the host environment.
 
-![GPU Monitor Placeholder](docs/images/gpu-monitor.png)
+![GPU Monitor](docs/images/gpu-monitor.png)
 
 ### ⚙️ Installation & Settings
 A built-in two-step installation flow initializes the application, prepares the MySQL database, creates the first administrator account, and saves runtime defaults before normal app access is opened.
 
-![Installer Screenshot Placeholder](docs/images/installer.png)
+![Installer Flow](docs/images/installer.png)
 
 ---
 
@@ -129,7 +129,7 @@ Basic flow:
 7. Restart the app cleanly
 8. Log in and begin using the app
 
-For full install notes, see **`INSTALL.md`**.
+See **`INSTALL.md`** for Linux and Windows installation guides.
 
 ---
 
