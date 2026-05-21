@@ -21,7 +21,9 @@ Windows and Linux/Ubuntu are supported when Python, MySQL, and a compatible `lla
 
 Install the required Python packages with:
 
-`pip install Flask Flask-Bcrypt Flask-Cors Flask-SocketIO Flask-WTF gevent mysql-connector-python requests`
+```bash
+pip install Flask Flask-Bcrypt Flask-Cors Flask-SocketIO Flask-WTF gevent mysql-connector-python requests
+```
 
 ## Required Application Files
 
@@ -61,6 +63,106 @@ Make sure the binary is executable and works from the shell before pointing LLM 
 
 Run the Python app using the operator's chosen shell, supervisor, or service method.
 
+## Ubuntu/Linux Service Deployment
+
+This is a supported service example, not the only valid Linux deployment pattern.
+
+For Ubuntu/Linux service installs, the recommended application folder is:
+
+`/srv/llmcontroller`
+
+Place or extract the LLM Controller CE application files into that folder before creating the service.
+
+Install the base OS packages:
+
+```bash
+sudo apt update
+sudo apt install -y python3 python3-pip python3-venv mysql-server
+```
+
+Create and activate a Python virtual environment:
+
+```bash
+cd /srv/llmcontroller
+python3 -m venv venv
+source venv/bin/activate
+```
+
+Install the Python package requirements, including Gunicorn for the service runtime:
+
+```bash
+pip install Flask Flask-Bcrypt Flask-Cors Flask-SocketIO Flask-WTF gevent mysql-connector-python requests gunicorn
+```
+
+Before installing the system service, run the app manually so the first-run web installer can complete:
+
+```bash
+python3 app.py
+```
+
+Open the installer in a browser, complete Step 1, then complete Step 2 with the Linux runtime settings for this host. See the [Web Installer guide](#first-start) below for the detailed installer flow.
+
+The Linux runtime settings should point to the configured `llama-server` binary and the local model folder. LLM Controller CE does not build or install `llama-server`; the binary must already be installed separately and working from the shell.
+
+After installer completion, stop the manual process with `Ctrl+C`.
+
+Create the systemd service file:
+
+```bash
+sudo nano /etc/systemd/system/llmcontroller.service
+```
+
+Use this service definition:
+
+```ini
+[Unit]
+Description=LLM Controller CE
+After=network-online.target mysql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/srv/llmcontroller
+Environment="PYTHONUNBUFFERED=1"
+ExecStart=/srv/llmcontroller/venv/bin/gunicorn --workers 1 --worker-class gthread --threads 4 --bind 0.0.0.0:5000 --access-logfile - --error-logfile - --capture-output --timeout 300 app:app
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
+```
+
+If the application folder, bind address, port, or MySQL service name differs on your host, adjust the service file before enabling it.
+
+Enable and start the service:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable llmcontroller
+sudo systemctl start llmcontroller
+```
+
+Basic service management commands:
+
+```bash
+sudo systemctl restart llmcontroller
+sudo systemctl stop llmcontroller
+sudo systemctl status llmcontroller --no-pager
+```
+
+Basic log commands:
+
+```bash
+sudo journalctl -u llmcontroller -f
+sudo journalctl -u llmcontroller -n 100 --no-pager
+```
+
+Because the service is enabled under `multi-user.target`, it will start again automatically after reboot when systemd reaches the normal multi-user boot target.
+
+AMD ROCm and NVIDIA telemetry tools are optional host-side dependencies for GPU reporting where applicable. Install and verify tools such as `rocm-smi`, `rocminfo`, or `nvidia-smi` separately according to the host GPU stack; they are not installed by LLM Controller CE.
+
 ## Important Runtime Note
 
 LLM Controller CE does not build `llama-server` for you.
@@ -76,7 +178,11 @@ Your `llama-server` build must already work on your system and must be compatibl
 
 On Windows, start LLM Controller CE using:
 
-`start_llm_controller.bat`
+```cmd
+start_llm_controller.bat
+```
+
+This batch file is the default convenience launcher. Other launch methods are fine if they start the same app environment.
 
 On Linux/Ubuntu, start the Python app using your chosen shell or service method.
 
