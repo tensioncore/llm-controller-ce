@@ -1,6 +1,7 @@
 # INSTALL.md
 
-# LLM Controller CE — Installation Guide
+# LLM Controller CE — Install Notes
+
 LLM Controller CE uses a first-run web installer.
 
 ## Requirements
@@ -115,6 +116,8 @@ sudo nano /etc/systemd/system/llmcontroller.service
 
 Use this service definition:
 
+This example assumes the main Flask file is `app.py` and the Flask app object is named `app`, which is why the Gunicorn command ends with `app:app`.
+
 ```ini
 [Unit]
 Description=LLM Controller CE
@@ -134,6 +137,8 @@ TimeoutStopSec=30
 [Install]
 WantedBy=multi-user.target
 ```
+
+The `--bind 0.0.0.0:5000` setting makes the app reachable from the host network when firewall and network rules allow it. You may change the bind address for local-only or reverse-proxy-only deployments.
 
 If the application folder, bind address, port, or MySQL service name differs on your host, adjust the service file before enabling it.
 
