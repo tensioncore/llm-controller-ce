@@ -23,7 +23,7 @@ benchmark_routes = Blueprint("benchmark_routes", __name__)
 # -------------------------------------------------------------------
 _bench_lock = threading.Lock()
 
-# ✅ NEW: cancel flag (threads can’t be killed safely; use a cooperative stop)
+# Cancel flag (threads can’t be killed safely; use a cooperative stop)
 _bench_cancel = threading.Event()
 
 _bench_state = {

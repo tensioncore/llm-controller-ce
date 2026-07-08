@@ -740,10 +740,10 @@
 <script>
     /* Called on every key press (except Enter) to keep the textarea height in sync */
     function handleKey(e){
-        if (e.key === 'Enter' && !e.shiftKey){   // send message
-            e.preventDefault();                  // stop normal newline insert
-            sendChat();
-        }
+        if (e.key !== 'Enter' || e.shiftKey) return;
+
+        e.preventDefault();                  // stop normal newline insert
+        sendChat();
     }
 
     /* Auto‑grow logic – keeps height ≤ max-height and shows scrollbar when needed  */

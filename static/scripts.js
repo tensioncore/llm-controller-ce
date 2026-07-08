@@ -188,7 +188,7 @@ function updateFixedLayoutMetrics() {
   const composerHeight = getVisibleElementHeight(chatInput);
   const topbarHeight = getVisibleElementHeight(topbar) || 48;
   const chatViewportBottom = composerHeight > 0
-    ? (bottomControlsHeight + composerHeight + 12)
+    ? (bottomControlsHeight + composerHeight)
     : (bottomControlsHeight + 120);
 
   root.style.setProperty("--bottom-controls-height", `${bottomControlsHeight}px`);
@@ -732,13 +732,9 @@ function sendDebugChat() {
         const pre = document.getElementById("debugModalPre");
         if (btn && pre) {
           btn.onclick = function (event) {
+            event.preventDefault();
             event.stopPropagation(); // Prevent modal close
-            navigator.clipboard.writeText(pre.textContent).then(() => {
-              btn.textContent = "✅ Copied!";
-              setTimeout(() => {
-                btn.textContent = "📋 Copy All Text";
-              }, 1200);
-            });
+            copyTextToClipboard(pre.textContent || "", btn);
           };
         }
       }, 10);
@@ -2341,9 +2337,10 @@ function initModelDrawer() {
 
 
 function handleEnter(event) {
-  if (event.key === 'Enter') {
-    sendChat();
-  }
+  if (event.key !== 'Enter' || event.shiftKey) return;
+
+  event.preventDefault();
+  sendChat();
 }
 
 function appendUserMessage(message, options = {}) {

@@ -29,15 +29,24 @@ function getCopySourceText(text, button) {
   return String(text ?? "");
 }
 
+function getCopyButtonResetText(button) {
+  if (!button) return COPY_BUTTON_TEXT;
+  if (!button.dataset) return button.innerText || COPY_BUTTON_TEXT;
+  const resetText = button.dataset.copyButtonResetText || button.innerText || COPY_BUTTON_TEXT;
+  button.dataset.copyButtonResetText = resetText;
+  return resetText;
+}
+
 function copyTextToClipboard(text, button) {
   const normalizedText = normalizeCopiedCodeText(getCopySourceText(text, button));
+  const resetText = getCopyButtonResetText(button);
 
   // Try Clipboard API first
   if (navigator.clipboard && window.isSecureContext) {
     navigator.clipboard.writeText(normalizedText).then(() => {
       if (button) {
         button.innerText = COPY_BUTTON_SUCCESS_TEXT;
-        setTimeout(() => { button.innerText = COPY_BUTTON_TEXT; }, 1500);
+        setTimeout(() => { button.innerText = resetText; }, 1500);
       }
     }).catch(() => fallbackCopy(normalizedText, button));
   } else {
@@ -46,6 +55,7 @@ function copyTextToClipboard(text, button) {
 }
 
 function fallbackCopy(text, button) {
+  const resetText = getCopyButtonResetText(button);
   const textarea = document.createElement("textarea");
   textarea.value = text;
   textarea.setAttribute("readonly", "");
@@ -57,7 +67,7 @@ function fallbackCopy(text, button) {
     document.execCommand("copy");
     if (button) {
       button.innerText = COPY_BUTTON_SUCCESS_TEXT;
-      setTimeout(() => { button.innerText = COPY_BUTTON_TEXT; }, 1500);
+      setTimeout(() => { button.innerText = resetText; }, 1500);
     }
   } catch (err) {
     alert("Could not copy!");

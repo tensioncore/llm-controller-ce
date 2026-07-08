@@ -275,7 +275,9 @@ def _make_insert_ignore(statement: str) -> str:
 
 
 def _make_create_table_if_not_exists(statement: str) -> str:
-    return re.sub(r"^CREATE\s+TABLE\b", "CREATE TABLE IF NOT EXISTS", statement, count=1, flags=re.IGNORECASE)
+    if re.match(r"^\s*CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\b", statement, flags=re.IGNORECASE):
+        return statement
+    return re.sub(r"^\s*CREATE\s+TABLE\b", "CREATE TABLE IF NOT EXISTS", statement, count=1, flags=re.IGNORECASE)
 
 
 def _extract_create_table_name(statement: str):
@@ -719,3 +721,4 @@ def save_installer_review_settings(connection, values: dict, updated_by_user_id=
             cursor.close()
         except Exception:
             pass
+        

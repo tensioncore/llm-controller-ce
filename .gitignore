@@ -121,7 +121,6 @@ temp/
 
 # Local runtime config / secrets
 bootstrap_config.json
-bootstrap_config.py
 flask_secret.key
 settings.local.*
 config.local.*
