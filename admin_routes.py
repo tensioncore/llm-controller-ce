@@ -20,7 +20,6 @@ MAX_ADMIN_EMAIL_LENGTH = 254
 def get_db():
     """
     Request-scoped MySQL connection.
-    (Phase A5 later: we can centralize teardown/closing, but this is stable and minimal.)
     """
     if 'db' not in g:
         try:
@@ -66,7 +65,7 @@ def admin_users():
     )
     users = cursor.fetchall()
 
-    # ✅ DB-only password policy (helpers.get_password_settings now reads MySQL settings)
+    # DB-backed password policy.
     settings = get_password_settings()
 
     return render_template('admin_users.html', users=users, settings=settings)
@@ -127,7 +126,7 @@ def add_user():
     pw_hash = generate_password_hash(temp_pw).decode('utf-8')
 
     try:
-        # ✅ is_active is the account-enabled (future: email-confirmed) flag.
+        # is_active is the account-enabled flag.
         cursor.execute(
             """
             INSERT INTO llm_users (

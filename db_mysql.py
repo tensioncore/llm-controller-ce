@@ -6,8 +6,6 @@ from contextlib import contextmanager
 def mysql_conn():
     """
     Single canonical MySQL connector.
-
-    All MySQL connections in the app should come from this function (Phase A5).
     """
     return mysql.connector.connect(
         host=app_config.DB_HOST,

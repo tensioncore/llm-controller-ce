@@ -13,7 +13,7 @@ import time
 import threading
 import config
 from app_settings import get_setting
-from db_mysql import mysql_conn  # unified MySQL entrypoint (Phase A5)
+from db_mysql import mysql_conn
 
 auth = Blueprint('auth', __name__)
 bcrypt = Bcrypt()

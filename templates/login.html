@@ -118,10 +118,8 @@
 
         <h2>LLM Controller Login</h2>
 
-        <!-- CSRF token – unchanged -->
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 
-        <!-- Email field – unchanged -->
         <input name="email"
                placeholder="Email"
                type="email"
@@ -129,13 +127,11 @@
                autofocus
                value="{{ request.form.get('email','') }}">
         
-        <!-- Password field – unchanged -->
         <input name="password"
                type="password"
                placeholder="Password"
                required>
 
-        <!-- ────────────────────── SWITCH (new) ------------------------------------- -->
         <div class="switch-wrapper">
             <label class="switch">
                 <input type="checkbox" id="remember-me" name="remember"
@@ -146,12 +142,10 @@
             Remember me
         </div>
 
-        <!-- Error message – unchanged -->
         {% if error %}
           <div class="error">{{ error }}</div>
         {% endif %}
 
-        <!-- Submit button – unchanged -->
         <button type="submit">Login</button>
         <div class="auth-links">
             <a href="{{ url_for('auth.forgot_password') }}">Forgot password?</a>

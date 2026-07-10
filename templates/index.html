@@ -32,7 +32,7 @@
         <script>
             window.MathJax = {
                 options: {
-                    enableMenu: false,   // ✅ kills that popup entirely
+                    enableMenu: false,   // Disable the MathJax context menu.
                     },
             tex: {
                 inlineMath: [['$', '$'], ['\\(', '\\)']],
@@ -746,7 +746,7 @@
         sendChat();
     }
 
-    /* Auto‑grow logic – keeps height ≤ max-height and shows scrollbar when needed  */
+    /* Auto-grow logic keeps height within max-height and shows scrollbar when needed. */
     function autoResize(el) {
         const MAX_HEIGHT = parseInt(getComputedStyle(el).maxHeight,10);   // 120px
 
@@ -765,7 +765,7 @@
 
         let url = '/analytics/admin_export_chats?format=' + encodeURIComponent(format);
 
-        // legacy: if you still have an input in some older markup, allow it
+        // Optional user ID filter if the field is present.
         if (!allUsers) {
             const uid = (document.getElementById("adminChatUserId")?.value || "").trim();
             if (!uid) { showCustomAlert("Enter a User ID first."); return; }

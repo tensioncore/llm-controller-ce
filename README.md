@@ -16,7 +16,7 @@ This is not just a launcher.
 It is not just a chat wrapper.  
 It is not just a benchmark tool.
 
-**LLM Controller CE** is the Community Edition foundation of LLM Controller — built to make self-hosted local model operation feel like a real product.
+**LLM Controller CE** is the Community Edition foundation of LLM Controller, built to make self-hosted local model operation feel like a real product.
     </td>
     <td valign="top" align="center" width="380">
       <img src="docs/images/hero-screenshot.png" alt="LLM Controller CE chat interface screenshot" width="360">
@@ -28,7 +28,7 @@ It is not just a benchmark tool.
 
 ![LLM Controller CE Overview](docs/images/llm-controller-hero.png)
 
-## 🚀 Why LLM Controller CE?
+## Why LLM Controller CE?
 
 Running local models often means juggling folders, terminals, runtime flags, scattered utilities, and disconnected interfaces.
 
@@ -36,62 +36,62 @@ LLM Controller CE changes that.
 
 It combines the operational side and the everyday usage side of local GGUF model operation into one unified web interface, including:
 
-- 💬 **Persistent Chat Workspace**
-- 🧠 **Reasoning-Aware Responses**
-- 🎛 **Managed Model Library**
-- 📎 **File-Aware Conversations**
-- 📈 **Benchmarks**
-- 🖥 **Runtime Visibility**
-- 📊 **GPU Monitor**
-- ⚙️ **Installation & Settings**
-- 👤 **Authenticated administration and user controls**
-- 🏠 **No cloud service required**
+- **Persistent Chat Workspace**
+- **Reasoning-Aware Responses**
+- **Managed Model Library**
+- **File-Aware Conversations**
+- **Benchmarks**
+- **Runtime Visibility**
+- **GPU Monitor**
+- **Installation & Settings**
+- **Authenticated administration and user controls**
+- **No cloud service required**
 
 ---
 
-## ✨ Highlights
+## Highlights
 
-### 💬 Persistent Chat Workspace
+### Persistent Chat Workspace
 Stream responses live, stop generation mid-stream, regenerate the latest answer, edit the latest prompt, and keep conversations organized through saved chat sessions with auto-generated titles.
 
 ![LLM Controller CE Chat Interface](docs/images/chat-screenshot.png)
 
-### 🧠 Reasoning-Aware Responses
+### Reasoning-Aware Responses
 When a model returns reasoning content, the interface can expose it with a dedicated show/hide workflow instead of burying it behind raw output.
 
 ![Reasoning Display](docs/images/thoughts-screenshot.png)
 
-### 🎛 Managed Model Library
+### Managed Model Library
 Scan a configured model directory for GGUF files, maintain a registry of available models, recognize complete split model sets, load and stop models, save runtime defaults, mark favorites, enable or disable entries, and control which models are allowed in benchmarks.
 
 ![Model Library Drawer](docs/images/model-drawer.png)
 
-### 📎 File-Aware Conversations
+### File-Aware Conversations
 Attach supported text-based files directly to prompts. LLM Controller CE applies server-side limits, chunks supported text content, and adds attachment context to the model request.
 
-### 📈 Benchmarks
+### Benchmarks
 Run administrator-controlled benchmarks across eligible models, edit the benchmark prompt set, review best-run summaries, inspect detailed saved outputs, and clearly distinguish current results from stale ones after prompt changes.
 
 ![Benchmark Dashboard](docs/images/benchmark.png)
 
-### 🖥 Runtime Visibility
+### Runtime Visibility
 Watch live `llama-server` logs, runtime status, active process visibility, GPU telemetry where available, and per-model analytics without needing a separate dashboard.
 
 ![Logs and Runtime Visibility](docs/images/logs.png)
 
-### 📊 GPU Monitor
+### GPU Monitor
 The GPU Monitor supports NVIDIA and AMD telemetry paths where local tools such as `nvidia-smi`, `rocm-smi`, or `rocminfo` are installed and compatible with the host environment.
 
 ![GPU Monitor](docs/images/gpu-monitor.png)
 
-### ⚙️ Installation & Settings
+### Installation & Settings
 A built-in two-step installation flow initializes the application, prepares the MySQL database, creates the first administrator account, and saves runtime defaults before normal app access is opened.
 
 ![Installer Flow](docs/images/installer.png)
 
 ---
 
-## 🔥 What Makes It Special
+## What Makes It Special
 
 LLM Controller CE is designed to feel like a **real local AI control product**, not a loose collection of scripts and utilities.
 
@@ -101,7 +101,7 @@ For people who care about local AI and controlling their own stack, this is the 
 
 ---
 
-## 🛠 Requirements
+## Requirements
 
 LLM Controller CE expects a self-hosted environment with:
 
@@ -114,7 +114,7 @@ LLM Controller CE expects a self-hosted environment with:
 
 ---
 
-## 📦 Installation
+## Installation
 
 LLM Controller CE uses a first-run web installer.
 
@@ -133,7 +133,7 @@ See **`INSTALL.md`** for Linux and Windows installation guides.
 
 ---
 
-## 🔐 Access Model
+## Access Model
 
 LLM Controller CE is built for authenticated use, including shared environments, not just a one-off single-user shell.
 
@@ -147,7 +147,7 @@ Current access behavior includes:
 
 ---
 
-## 🧾 License
+## License
 
 LLM Controller CE is licensed under the **GNU General Public License version 3.0 (GPLv3)**.
 
@@ -155,19 +155,19 @@ See **`LICENSE`** for full terms.
 
 ---
 
-## 🏷 Attribution
+## Attribution
 
 LLM Controller CE is developed by **Tensioncore Administration Services**.
 
 ---
 
-## 🌌 The Bigger Picture
+## The Bigger Picture
 
 LLM Controller CE is the start of a broader product direction:
 
 **run local AI cleanly, monitor it properly, evaluate it honestly, and keep control of your own infrastructure.**
 
-That’s what this project is about.
+That's what this project is about.
 
 ## Related Links
 

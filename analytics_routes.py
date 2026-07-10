@@ -465,7 +465,7 @@ def import_chats():
 @analytics_routes.route('/delete_all_chats', methods=['POST'])
 @login_required(roles=["admin", "user"])
 def delete_all_chats():
-    # ✅ users only delete their own chats
+    # Users only delete their own chats.
     user_id = session.get("user_id")
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()

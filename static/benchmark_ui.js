@@ -111,7 +111,7 @@
 
     const pctEl     = pickEl(["benchProgressPct", "benchProgressLabel"]);
     const fillEl    = pickEl(["benchProgressFill"]);
-    const progEl    = pickEl(["benchProgressBar"]); // legacy <progress> support if present
+    const progEl    = pickEl(["benchProgressBar"]);
 
     // Buttons (your current HTML uses benchRunBtn/benchStopBtn/benchRefreshBtn)
     const runBtn    = pickEl(["benchRunBtn", "benchStartBtn", "benchmarkRunBtn"]);
@@ -653,7 +653,7 @@
 
       const size = (row.size_gb !== undefined) ? row.size_gb : "";
 
-      // ✅ eliminate decimals in TPS
+      // Eliminate decimals in TPS.
       const avg = Math.round(safeNum(row.avg_eval_tps, 0));
       const min = Math.round(safeNum(row.min_eval_tps, 0));
       const max = Math.round(safeNum(row.max_eval_tps, 0));

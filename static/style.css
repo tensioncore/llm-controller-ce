@@ -55,7 +55,7 @@ body { background: #121212; color: #f2f2f2; font-family: 'Courier New', Courier,
 .attachment-chip-remove { background: none; border: none; color: #ffb7b7; cursor: pointer; font-size: 1em; padding: 0 2px; line-height: 1; }
 .attachment-chip-remove:disabled { opacity: 0.55; cursor: default; }
 .attach-files-btn { margin: 0; min-width: 46px; padding-left: 12px; padding-right: 12px; }
-.chat-input-container textarea { flex: 1; min-width: 0; padding: 11px 12px; border: none; background: transparent; color: #f2f2fa; font-size: 16px; line-height: 1.4; /* used by the JS height calculation */ border-radius: 12px; margin-right: 0; min-height: 45px; /* one‑row baseline          */ max-height: 120px; /* ~four rows                 */ resize: vertical; outline: none; box-shadow: none; transition: border .14s; overflow-y: hidden; /* hide scrollbar until needed   */ }
+.chat-input-container textarea { flex: 1; min-width: 0; padding: 11px 12px; border: none; background: transparent; color: #f2f2fa; font-size: 16px; line-height: 1.4; /* used by the JS height calculation */ border-radius: 12px; margin-right: 0; min-height: 45px; /* one-row baseline          */ max-height: 120px; /* ~four rows                 */ resize: vertical; outline: none; box-shadow: none; transition: border .14s; overflow-y: hidden; /* hide scrollbar until needed   */ }
 .chat-input-container textarea:focus { border-color: transparent; }
 .chat-input-row .send-button { margin: 0; min-height: 44px; padding: 10px 14px; border-radius: 10px; }
 .send-button { background: #0099ff; color: #fff; font-size: 1.17em; font-family: Arial, Calibri, Trebuchet, sans-serif; padding: 10px 16px; margin-left: 7px; margin-right: 2px; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; transition: background 0.17s; }
@@ -555,7 +555,7 @@ body.installer-page { overflow-y: auto; min-height: 100vh; background: radial-gr
 /* POWER */
 .gpu-stat-pill.power { border-color: rgba(255,170,0,0.40); background: linear-gradient(180deg, rgba(255,170,0,0.18), rgba(255,170,0,0.06)); color: #ffcc66; box-shadow: 0 0 10px rgba(255,170,0,0.14); }
 
-/* TEMP */
+/* Temperature */
 .gpu-stat-pill.temp { border-color: rgba(255,80,80,0.40); background: linear-gradient(180deg, rgba(255,80,80,0.18), rgba(255,80,80,0.06)); color: #ff8a8a; box-shadow: 0 0 10px rgba(255,80,80,0.14); }
 
 /* PROCESS TABLE FEEL */

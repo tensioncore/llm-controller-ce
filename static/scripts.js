@@ -12,7 +12,7 @@ const ANALYTICS_PREFIX  = '/analytics';
 const BENCH_PREFIX = '/benchmark';
 window.BENCH_PREFIX = BENCH_PREFIX;
 
-// ✅ Expose prefixes for other modules (like _system.js) if they expect them
+// Expose prefixes for other modules.
 window.CHAT_PREFIX = CHAT_PREFIX;
 window.SETTINGS_PREFIX = SETTINGS_PREFIX;
 window.ANALYTICS_PREFIX = ANALYTICS_PREFIX;
@@ -21,7 +21,7 @@ const socket = io({
   path: '/socket.io'
 });
 
-// ✅ Expose socket for _system.js (top-level const is not window.socket)
+// Expose socket for modules that expect window.socket.
 window.socket = socket;
 
 let currentSessionId = localStorage.getItem("currentSessionId") || null;
@@ -325,14 +325,11 @@ function syncModelDrawerRuntimeState(runtime) {
 function requestLoadChat(sessionId, reason = "") {
   if (!sessionId) return;
 
-  // If streaming, never mutate DOM. Queue it.
-  if (isResponding) {
-    pendingSessionId = sessionId;
-
-    // If user clicked a different chat while streaming, you can optionally notify:
-    // showCustomAlert("Assistant is still responding — switching chats when it finishes.");
-    return;
-  }
+    // If streaming, never mutate DOM. Queue it.
+    if (isResponding) {
+        pendingSessionId = sessionId;
+        return;
+    }
 
   loadChat(sessionId);
 }
@@ -1313,7 +1310,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   const saveSettingsBtn = document.getElementById("saveSettingsBtn");
   if (saveSettingsBtn) {
-    // ✅ Nuke any previously attached listeners by replacing the node
+    // Replace the node to remove previously attached listeners.
     const fresh = saveSettingsBtn.cloneNode(true);
     saveSettingsBtn.parentNode.replaceChild(fresh, saveSettingsBtn);
 
@@ -1363,7 +1360,7 @@ function toggleDrawer(drawerId) {
   const chatInput = document.querySelector('.chat-input-container');
   const drawerBar = document.querySelector('.drawer-bar');
 
-  // ✅ If drawer doesn't exist (role-gated out), do nothing safely
+  // If drawer doesn't exist (role-gated out), do nothing safely.
   if (!drawer) return;
 
   // If this drawer is already open, close all and show chat UI
@@ -1519,13 +1516,11 @@ function loadSettings() {
     })
     .catch(err => {
       console.error(err);
-      // Optional:
-      // showCustomAlert("⚠️ Failed to load settings: " + (err?.message || err));
     });
 }
 
 function saveSettings() {
-  // ✅ hard guard: ignore double-invocation
+  // Guard against double invocation.
   if (window.__saveSettingsInFlight) return;
   window.__saveSettingsInFlight = true;
 
@@ -2181,7 +2176,7 @@ function stopModel() {
       }
       showCustomAlert("Model stopped!");
       if (window.SystemDrawer && typeof window.SystemDrawer.stopLogStream === "function") {
-        window.SystemDrawer.stopLogStream();   // ✅ auto-stop logs on unload
+        window.SystemDrawer.stopLogStream();   // Stop log streaming on unload.
       }
       pollModelStatus();
     })
@@ -2276,7 +2271,7 @@ function pollModelStatus() {
         }
         syncModelDrawerRuntimeState(runtime);
 
-        // ✅ Everyone gets title updates (admin or not)
+        // Everyone gets title updates (admin or not).
         if (data.current_model) {
           const shortName = getModelDisplayName(data.current_model);
           document.title = shortName;
@@ -2457,7 +2452,7 @@ function createBotBubble() {
   const toggle = document.createElement("div");
   toggle.className = "show-thoughts";
   toggle.innerText = "Show Thoughts";
-  toggle.style.display = "none"; // ✅ hide by default until we have thoughts
+  toggle.style.display = "none"; // Hide by default until thoughts are available.
   toggle.onclick = function () {
     setThoughtsExpanded(bubble, !bubble._thoughtsExpanded);
   };
@@ -2490,7 +2485,7 @@ function enhanceCodeBlocks(messageDiv) {
       wrapper.appendChild(pre);
     }
 
-    // --- 1) Language label (unchanged behavior, but insert ABOVE wrapper)
+    // Language label.
     const langClass = Array.from(code.classList).find(c => c.startsWith('language-'));
     if (langClass) {
       const langName = langClass.replace('language-', '');
@@ -2615,7 +2610,7 @@ socket.on("receive_message", function (data) {
   if (!chatMessages) return;
   if (!isChatSocketEventForActiveSession(data)) return;
 
-  const messageId = data.message_id; // ✅ new contract only
+  const messageId = data.message_id; // Current message contract only.
   if (!messageId) return;
   const incomingAction = typeof data?.action === "string" ? data.action : "";
   const incomingSourcePromptId = typeof data?.source_prompt_id === "string" ? data.source_prompt_id.trim() : "";

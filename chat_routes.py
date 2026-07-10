@@ -13,7 +13,7 @@ import model_routes
 from extensions import socketio
 from helpers import DB_PATH
 from app_settings import get_setting
-from auth import DEFAULT_SESSION_VERSION, _coerce_session_version, login_required, validate_session_user  # âœ… reuse your existing decorator
+from auth import DEFAULT_SESSION_VERSION, _coerce_session_version, login_required, validate_session_user
 from db_mysql import mysql_conn
 from flask_socketio import disconnect, join_room, leave_room
 from werkzeug.datastructures import MultiDict

@@ -9,7 +9,7 @@ import traceback
 
 import requests
 
-from db_mysql import mysql_conn  # ✅ Phase A5: unified MySQL entrypoint
+from db_mysql import mysql_conn
 from auth import login_required
 from extensions import socketio
 from helpers import find_models
@@ -23,7 +23,7 @@ benchmark_routes = Blueprint("benchmark_routes", __name__)
 # -------------------------------------------------------------------
 _bench_lock = threading.Lock()
 
-# Cancel flag (threads can’t be killed safely; use a cooperative stop)
+# Cancel flag. Threads cannot be killed safely; use a cooperative stop.
 _bench_cancel = threading.Event()
 
 _bench_state = {
@@ -181,7 +181,7 @@ def bench_reset_model():
 
         model_id = int(row["id"])
 
-        # ✅ ALWAYS clear ALL runs (no failed-only logic)
+        # Always clear all runs. There is no failed-only mode.
         cur.execute("SELECT id FROM llm_benchmark_runs WHERE model_id=%s", (model_id,))
         run_ids = [int(r["id"]) for r in (cur.fetchall() or [])]
 
@@ -415,8 +415,8 @@ def stop_any_running_models():
 
 def start_benchmark_model(model_path, settings, force_cpu_only=False):
     """
-    Override the legacy benchmark launcher with the same split-GGUF and CPU-only
-    normalization used by the main model start path.
+    Start benchmark models with the same split-GGUF and CPU-only normalization
+    used by the main model start path.
     """
     normalized_model_path, split_info, split_error = model_routes._normalize_model_launch_path(model_path)
     if split_error:
@@ -609,7 +609,7 @@ def _cancel_and_exit(admin_user_id, run_id=None, model_path=None, where=""):
     return
 
 def benchmark_worker(admin_user_id, profile_name, promptset_name, promptset_version, force=False):
-    # ✅ ensure clean cancel flag for a new worker start
+    # Ensure clean cancel flag for a new worker start.
     _bench_cancel.clear()
 
     with _bench_lock:
@@ -635,7 +635,7 @@ def benchmark_worker(admin_user_id, profile_name, promptset_name, promptset_vers
 
     try:
 
-        # ✅ Source of truth: registry ONLY (present + enabled + allow_benchmark=1)
+        # Source of truth: registry only (present + enabled + allow_benchmark=1).
         ggufs = _get_registry_models_for_bench(include_disabled=False)
 
         prof = get_profile(profile_name) or get_profile(CE_BENCHMARK_PROFILE_NAME)
@@ -678,7 +678,7 @@ def benchmark_worker(admin_user_id, profile_name, promptset_name, promptset_vers
         warmup_enabled = _coerce_profile_setting(settings, "warmup_enabled", bool)
         warmup_max_tokens = _coerce_profile_setting(settings, "warmup_max_tokens", int, minimum=1)
 
-        # ✅ Global token cap
+        # Global token cap.
         max_tokens_cap = int(settings.get("max_tokens_cap", 2500))
 
         stop_any_running_models()
@@ -703,7 +703,7 @@ def benchmark_worker(admin_user_id, profile_name, promptset_name, promptset_vers
             _emit_to_user(admin_user_id, "benchmark_progress", dict(_bench_state))
             _log_state_tick()
 
-            # ✅ Registry is source of truth now — don't fingerprint/upsert here.
+            # Registry is source of truth; don't fingerprint/upsert here.
             # Just make sure the file actually exists on disk.
             if not os.path.isfile(model_path):
                 with _bench_lock:
@@ -1145,7 +1145,7 @@ def bench_best():
         )
         rows = cur.fetchall() or []
 
-        # Present-on-disk detection (unchanged)
+        # Present-on-disk detection.
         def _norm(s: str) -> str:
             if s is None:
                 return ""

@@ -147,8 +147,7 @@ def _sync_runtime_bootstrap_config(bootstrap_config):
 
 def get_db():
     """
-    Keep existing request-scoped pattern for now (surgical).
-    Phase A5 will unify this globally.
+    Request-scoped MySQL connection.
     """
     if 'db' not in g:
         try:
