@@ -121,9 +121,9 @@ Small public example model:
 
 * Repository: `bartowski/DeepSeek-R1-Distill-Qwen-1.5B-GGUF`
 * File: `DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf`
-* URL: `https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-1.5B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf`
+* Download source: `https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-1.5B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf`
 
-Download it into the model folder. In v1.0, this exact small GGUF model is required for background chat title generation:
+Download it into the model folder. In LLM Controller CE v1.0, this exact GGUF model is required for background chat title generation, even if you use different models for normal conversations.
 
 ```bash
 cd /srv/llmcontroller/LLMs
@@ -177,43 +177,7 @@ cmake -S . -B build \
 cmake --build build --config Release -- -j "$(nproc)"
 ```
 
-MI300X is normally `gfx942`. Managed cloud GPU images often already include ROCm; do not reinstall ROCm unless your provider requires it. NVIDIA CUDA, CPU-only, packaged binaries, or provider-supplied builds are also valid runtime paths as long as `llama-server` works on the host.
-
-Runtime/offload examples for CUDA builds and general `llama-server` usage:
-
-```bash
-/srv/llama.cpp/build/bin/llama-server \
-  -m /srv/llmcontroller/LLMs/model.gguf \
-  --host 0.0.0.0 \
-  --port 8080 \
-  -ngl 999
-```
-
-Two-GPU layer split:
-
-```bash
-/srv/llama.cpp/build/bin/llama-server \
-  -m /srv/llmcontroller/LLMs/model.gguf \
-  --host 0.0.0.0 \
-  --port 8080 \
-  -ngl 999 \
-  --split-mode layer \
-  --tensor-split 1,1
-```
-
-Uneven two-GPU split:
-
-```bash
---tensor-split 3,2
-```
-
-Partial GPU offload / CPU fallback:
-
-```bash
--ngl 20
-```
-
-`-ngl 999` attempts to offload as many layers as possible to GPU. Lower `-ngl` values leave more work on CPU/system RAM. `--tensor-split` uses comma-separated positive proportions such as `1,1` or `3,2`. The `model.gguf` path is an example; replace it with your actual GGUF filename. LLM Controller CE stores comparable runtime settings through the installer/settings UI, including GPU layers and model folder paths, but `llama-server` should work from the shell first.
+MI300X is normally `gfx942`. Managed cloud GPU images often already include ROCm; do not reinstall ROCm unless your provider requires it. NVIDIA CUDA, CPU-only, packaged binaries, or provider-supplied builds are also valid paths as long as `llama-server` works on the host.
 
 ### 9. Start The First-Run Installer Manually
 
@@ -223,6 +187,15 @@ cd /srv/llmcontroller
 ```
 
 For local setup, open http://127.0.0.1:5000/. For a remote cloud VM, open http://<VM_PUBLIC_IP>:5000/.
+
+**Note:** Depending on your network setup, if you cannot access the site after starting the application, you may need to manually update `bootstrap_config.json`.
+
+Copy `bootstrap_config.example.json` to `bootstrap_config.json`, then update:
+
+- `app_host` to the address you use to access LLM Controller (for example, your local IP, hostname, or public IP)
+- `cors-allowed-origins` to include the same address
+
+Save the file and restart the application.
 
 ### 10. Complete Installer Step 1
 
@@ -351,6 +324,20 @@ sudo journalctl -u llmcontroller -n 100 --no-pager
 ```
 
 Because the service is enabled under `multi-user.target`, it will start again automatically after reboot when systemd reaches the normal multi-user boot target.
+
+### Optional: Troubleshooting llama-server
+
+If you encounter model loading or runtime errors that appear to be related to `llama-server`, you can test the runtime directly by starting a model manually. This bypasses LLM Controller and allows `llama-server` to display its own error messages, which can help identify issues with the model file, runtime build, GPU configuration, or startup options.
+
+Example:
+
+```bash
+/srv/llama.cpp/build/bin/llama-server \
+  -m /srv/llmcontroller/LLMs/DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf \
+  --host 0.0.0.0 \
+  --port 8080 \
+  -ngl 999
+```
 
 ## Windows Default Runtime Layout
 
