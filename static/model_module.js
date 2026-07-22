@@ -1,10 +1,4 @@
-/* /model_module.js
-   Model dropdown + sorting + drawer auto-open behavior.
-   Adds registry merge (is_enabled/is_favorite) so dropdown can hide disabled and float favorites.
-*/
-
 (function () {
-  // Keep same globals as before (other code expects these names)
   window.models = window.models || [];
   window.currentModelSort = window.currentModelSort || { by: "name", dir: "asc" };
   window.selectedModelValue = window.selectedModelValue || null;
@@ -77,7 +71,7 @@
       return map;
     } catch (e) {
       // Silent fallback: dropdown still works, just no registry filtering
-      console.warn("[model_module] registry/list unavailable (ok for non-admin):", e.message || e);
+      console.warn("[model_module] registry/list unavailable:", e.message || e);
       return null;
     }
   }
@@ -99,24 +93,19 @@
     return models;
   }
 
-  // Fetch models and sort on load
   window.loadModelDropdown = function loadModelDropdown() {
     (async () => {
       try {
-        // Primary list (already filtered by backend)
         const data = await fetchJsonOrThrow("/model/registry/dropdown");
         let list = (data && Array.isArray(data.models)) ? data.models : [];
 
-        // Optional: enrich with registry flags if available (won't break for non-admin)
         const regMap = await loadRegistryMap();
         list = mergeRegistryFields(list, regMap);
 
-        // Hide disabled ONLY when registry is available; otherwise treat as enabled
         if (regMap) {
           list = list.filter(m => yn(m.is_enabled) !== false);
         }
 
-        // Keep current selection if still present; otherwise clear selection
         if (window.selectedModelValue) {
           const stillThere = list.some(m => m.value === window.selectedModelValue);
           if (!stillThere) window.selectedModelValue = null;
@@ -124,7 +113,6 @@
 
         window.models = list;
 
-        // Ensure default sort runs so favorites float immediately
         window.sortModels(window.currentModelSort.by, window.currentModelSort.dir === "asc");
         window.renderModelDropdown();
       } catch (err) {
@@ -235,7 +223,6 @@
     if (sel) sel.classList.remove("open");
   };
 
-  // Init/wiring (was the early DOMContentLoaded block)
   window.initModelDropdownUI = function initModelDropdownUI() {
     const showControlsBar = document.getElementById("showControlsBar");
     if (showControlsBar && typeof window.isMobile === "function") {
@@ -244,7 +231,6 @@
 
     window.loadModelDropdown();
 
-    // Open/close toggle
     const ddSelected = document.getElementById("dropdown-selected");
     const ddList = document.getElementById("dropdownList");
 
@@ -257,19 +243,16 @@
       };
     }
 
-    // Clicking outside closes dropdown
     document.addEventListener("click", function () {
       window.closeDropdown();
     });
 
-    // Keep clicks inside dropdown from closing
     if (ddList) {
       ddList.onclick = function (e) {
         e.stopPropagation();
       };
     }
 
-    // Sorting button handlers
     [
       { id: "sortNameAsc", by: "name", dir: "asc" },
       { id: "sortNameDesc", by: "name", dir: "desc" },
@@ -286,7 +269,6 @@
       };
     });
 
-    // ---- Drawer open on no model loaded ----
     fetch("/model/model_status", { credentials: "same-origin" })
       .then(res => res.json())
       .then(data => {
@@ -295,13 +277,11 @@
           if (drawer && !drawer.classList.contains("open")) {
             drawer.classList.add("open");
 
-            // Force dropdown closed
             if (ddList) ddList.style.display = "none";
             if (ddSelected) ddSelected.classList.remove("open");
 
             if (typeof window.updateChatForSidebar === "function") window.updateChatForSidebar();
 
-            // Auto-hide the drawer bar after opening the model drawer (mobile only)
             const drawerBar = document.querySelector(".drawer-bar");
             const chatInput = document.querySelector(".chat-input-container");
             const btn = document.getElementById("toggleDrawerBarBtn");
@@ -316,7 +296,6 @@
       })
       .catch(() => { /* quiet */ });
 
-    // Drawer bar: hide when any panel button pressed (except toggle)
     document.querySelectorAll(".drawer-bar button").forEach(btn => {
       if (btn.id !== "toggleDrawerBarBtn") {
         btn.addEventListener("click", () => {

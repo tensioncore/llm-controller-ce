@@ -1,4 +1,3 @@
-# helpers.py
 import os
 import sqlite3
 import requests
@@ -39,7 +38,6 @@ def generate_temp_password(settings):
     if not chars:
         chars = string.ascii_letters + string.digits
 
-    # Fill up the rest
     password = required
     while len(password) < length:
         password.append(secrets.choice(chars))

@@ -9,11 +9,9 @@
     <title>{{ version }}</title>
     <link rel="stylesheet" href="/static/style.css">
 
-    <!-- Include Socket.IO client -->
     <script src="/static/marked.min.js"></script>
     <script src="/static/socket.io.js"></script>
 
-    <!-- Defer our internal JS so it runs after DOM is parsed -->
     <script src="/static/_http.js" defer></script>
     <script src="/static/_utils.js" defer></script>
     <script src="/static/model_module.js" defer></script>
@@ -22,7 +20,6 @@
     <script src="/static/benchmark_ui.js" defer></script>
     {% endif %}
 
-    <!-- scripts.js creates the socket; load it before _system.js -->
     <script src="/static/scripts.js" defer></script>
     <script src="/static/_system.js" defer></script>
 
@@ -32,7 +29,7 @@
         <script>
             window.MathJax = {
                 options: {
-                    enableMenu: false,   // Disable the MathJax context menu.
+                    enableMenu: false,
                     },
             tex: {
                 inlineMath: [['$', '$'], ['\\(', '\\)']],
@@ -46,9 +43,11 @@
         <script defer src="/static/mathjax/tex-mml-svg.js"></script>
 </head>
 <body>
-    <!-- Sidebar -->
     <div class="sidebar">
         <h2>New Chat <button class="new-chat">➕</button></h2>
+        <div class="chat-history-search">
+            <input id="chatHistorySearch" type="search" autocomplete="off" placeholder="Search chats" aria-label="Search chats">
+        </div>
         <ul id="chatHistory"></ul>
     </div>
 
@@ -67,7 +66,6 @@
             </button>          
             {% endif %}
 
-            <!-- Place next to logout/info in your topbar/header -->
             {% if session.get('role') == 'admin' %}
             <a href="{{ url_for('admin.admin_users') }}" class="header-admin-btn" title="User Management">
             <svg width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 16 16">
@@ -78,7 +76,6 @@
             </a>
             {% endif %}
             <a href="{{ url_for('auth.logout') }}" class="header-logout-btn" title="Log out" aria-label="Log out">
-            <!-- SVG BELOW -->
             <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 16 16" fill="none">
                 <circle cx="8" cy="8" r="7.3" stroke="currentColor" stroke-width="1.5" fill="none"/>
                 <path d="M8.5 5.5l2.5 2.5-2.5 2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
@@ -95,7 +92,7 @@
 
         <div class="chat-container">
             <div id="chatMessages" class="chat-messages">
-                <!-- Chat bubbles go here -->
+                 
             </div>
         </div>
         <button id="scrollToBottomBtn" class="scroll-to-bottom-btn" type="button" aria-label="Scroll to bottom" title="Scroll to bottom" aria-hidden="true">↓</button>
@@ -128,7 +125,6 @@
         </button>
     </div>    
 
-    <!-- Model Drawer (all logged-in users can view Model Details; admin can control) -->
     {% if session.get('user_id') %}
     <div id="modelDrawer" class="drawer">
     <div class="model-drawer-grid">
@@ -164,7 +160,6 @@
             </div>
         </div>
 
-        <!-- Model Selector -->
         <div class="form-row">
             <div class="form-label">Model:</div>
 
@@ -176,7 +171,6 @@
             <input type="hidden" id="modelSelect" name="modelSelect">
         </div>
 
-        <!-- Parameters grid -->
         <div class="params-grid">
             <div class="form-row"><label for="nGpuLayers">🎮 GPU Layers:</label><input type="number" id="nGpuLayers" title="GPU Layers..."></div>
             <div class="form-row cpu-only-row">
@@ -197,7 +191,6 @@
             <div class="form-row"><label for="seed">🎲 Seed:</label><input type="number" id="seed" title="Seed..."></div>
         </div>
 
-        <!-- Action buttons -->
         <div class="button-row">
             <button id="startModelBtn" class="start-model-btn" onclick="startModel()">🚀 Start Model</button>
             <button class="stop-model-btn" onclick="stopModel()">🛑 Stop Model</button>
@@ -224,7 +217,6 @@
     </div>
     {% endif %}
 
-    <!-- Logs Drawer -->
     <div id="logsDrawer" class="drawer">
         <div class="drawer-header">
         📜 Logs
@@ -236,7 +228,6 @@
         <pre id="logContent">Logs will appear here...</pre>
     </div>
     
-   <!-- GPU Monitor Drawer -->
 <div id="smiDrawer" class="drawer">
     <div class="drawer-header">
         🖥️ GPU Monitor
@@ -258,6 +249,10 @@
 
             <div class="gpu-overview-right">
                 <div class="gpu-power-card">
+                    <div class="gpu-power-label">System RAM</div>
+                    <div id="systemRamUsage" class="gpu-power-value">-</div>
+                </div>
+                <div class="gpu-power-card">
                     <div class="gpu-power-label">Total Power</div>
                     <div id="powerUsage" class="gpu-power-value">—</div>
                 </div>
@@ -278,7 +273,6 @@
     </div>
 </div>
 
-    <!-- Analytics Drawer -->
     <div id="analyticsDrawer" class="drawer">
         <div class="drawer-header">
             📊 Analytics
@@ -286,13 +280,12 @@
         </div>
         <div class="analytics-content">
             <div class="refresh-notice">Includes all generated responses, including regenerate and edit variants.</div>
-            <pre id="analyticsDashboard">Loading analytics...</pre>
+            <div id="analyticsDashboard" class="analytics-dashboard" aria-live="polite">Loading analytics...</div>
           
         </div>
         
     </div>
 
-    <!-- Chat History Export/Import & Clear Drawer -->
     <div id="importExportDrawer" class="drawer">
         <div class="drawer-header">
             📤📥 Chat History
@@ -300,41 +293,57 @@
         </div>
         <div class="drawer-scroll-content">
             <div class="chat-history-form">
-                <h3>Export Chat History</h3>
-                <div class="form-row">
-                    <label for="exportFormat">Format:</label>
-                    <select id="exportFormat">
-                        <option value="json">JSON</option>
-                        <option value="csv">CSV</option>
-                        <option value="markdown">Markdown</option>
-                    </select>
-                </div>
-                <button onclick="exportChatHistory()">Export</button>
-                <hr>
-                <h3>Import Chat History (json/csv)</h3>
-                <div class="form-row">
-                    <label for="importConflict">Conflict Resolution:</label>
-                    <select id="importConflict">
-                        <option value="append">Append</option>
-                        <option value="overwrite">Overwrite</option>
-                    </select>
-                </div>
-                <div class="form-row">
-                    <input type="file" id="importFile">
-                </div>
-                <button onclick="importChatHistory()">Import</button>
-                <hr>
-                <h3 style="color:red;">Clear Chat History</h3>
-                <button id="clearChatHistoryBtn" style="background-color:red; color:white;" onclick="clearChatHistory()">Clear Chat History</button>
+                <section class="chat-history-section chat-history-export-section" aria-labelledby="exportChatHistoryTitle">
+                    <div class="chat-history-section-heading">
+                        <h3 id="exportChatHistoryTitle">Export Chat History</h3>
+                        <p>Exports chats owned by your signed-in account. JSON and CSV can be imported later; Markdown is a read-only archive.</p>
+                    </div>
+                    <div class="form-row">
+                        <label for="exportFormat">Format:</label>
+                        <select id="exportFormat">
+                            <option value="json">JSON</option>
+                            <option value="csv">CSV</option>
+                            <option value="markdown">Markdown</option>
+                        </select>
+                    </div>
+                    <button type="button" onclick="exportChatHistory()">Export</button>
+                </section>
+                <section class="chat-history-section chat-history-import-section" aria-labelledby="importChatHistoryTitle">
+                    <div class="chat-history-section-heading">
+                        <h3 id="importChatHistoryTitle">Import Chat History</h3>
+                        <p>JSON and CSV imports are assigned to your signed-in account. Any user IDs in the file are ignored.</p>
+                    </div>
+                    <div class="form-row">
+                        <label for="importConflict">Conflict Resolution:</label>
+                        <select id="importConflict">
+                            <option value="append">Append</option>
+                            <option value="overwrite">Overwrite</option>
+                        </select>
+                    </div>
+                    <p class="chat-history-option-help"><strong>Append:</strong> keeps existing chats and adds imported rows. <strong>Overwrite:</strong> replaces only your sessions whose IDs appear in the file.</p>
+                    <div class="form-row">
+                        <input type="file" id="importFile">
+                    </div>
+                    <p class="chat-history-option-help">Import limit: 10 MB and 25,000 rows.</p>
+                    <button type="button" onclick="importChatHistory()">Import</button>
+                </section>
+                <section class="chat-history-section chat-history-danger-section" aria-labelledby="clearChatHistoryTitle">
+                    <div class="chat-history-section-heading">
+                        <h3 id="clearChatHistoryTitle">Clear Chat History</h3>
+                        <p>Permanently deletes every chat owned by your signed-in account. This cannot be undone.</p>
+                    </div>
+                    <button id="clearChatHistoryBtn" class="chat-history-danger-btn" type="button" onclick="clearChatHistory()">Clear Chat History</button>
+                </section>
             </div>
             {% if session.get('role') == 'admin' %}
             <div class="admin-container">
               <h2>Admin: User Chat Management</h2>
+              <p class="admin-chat-history-help">Export ALL Users preserves source user IDs for archive purposes. This drawer's importer always assigns valid imported chats to the signed-in account.</p>
           
               <form class="add-user-form" onsubmit="event.preventDefault();">
                 <button type="button" onclick="adminLoadChatUsers()">Load Users With Chats</button>
                 <button type="button" onclick="adminExportChats(true)">Export ALL Users</button>
-                <button type="button" class="user-action-btn" onclick="adminDeleteAllChats()">Delete ALL Chats</button>
+                <button type="button" class="user-action-btn admin-danger-btn" onclick="adminDeleteAllChats()">Delete ALL Chats</button>
               </form>
           
               <table class="responsive-table" id="adminChatsTable" style="display:none;">
@@ -357,7 +366,6 @@
         </div>
     </div>
 
-<!-- Benchmarks Drawer (Admin only) -->
 {% if session.get('role') == 'admin' %}
 <div id="benchmarksDrawer" class="drawer">
     <div class="drawer-header">
@@ -365,20 +373,24 @@
         <button class="drawer-close-btn" onclick="closeAllDrawers()">✖</button>
     </div>
 
-    <div class="benchmarks-content" style="padding:12px;">
+    <div class="benchmarks-content">
+      <div id="benchResultsView" class="bench-results-view">
 
-        <!-- STATUS -->
-        <div style="margin-bottom:10px;">
-            <div><b>Status:</b> <span id="benchStatusLine">idle</span></div>
-            <div id="benchMessageLine" style="margin-top:6px; opacity:.95;"></div>
-            <div id="benchCountsLine" style="margin-top:6px; opacity:.8;"></div>
-            <div id="benchStartedLine" style="margin-top:6px; opacity:.6;"></div>
-            <div id="benchEndedLine" style="margin-top:6px; opacity:.6;"></div>
-        </div>
+        <section class="bench-runtime-panel" aria-labelledby="benchRuntimeTitle">
+          <div class="bench-runtime-top">
+            <div class="bench-status-block">
+              <div id="benchRuntimeTitle" class="bench-section-label">Benchmark status</div>
+              <div class="bench-status-primary"><span>Status</span><strong id="benchStatusLine">idle</strong></div>
+              <div id="benchMessageLine" class="bench-status-message"></div>
+              <div class="bench-status-meta">
+                <div id="benchCountsLine"></div>
+                <div id="benchStartedLine"></div>
+                <div id="benchEndedLine"></div>
+              </div>
+            </div>
 
-        <!-- CONTROLS -->
         <div class="bench-controls-row">
-            <label style="display:flex; gap:6px; align-items:center;">
+            <label class="bench-force-control">
                 <input type="checkbox" id="benchForceCheckbox">
                 Force re-run
             </label>
@@ -390,30 +402,31 @@
                 Stop
             </button>
             <button id="benchRefreshBtn" type="button">Refresh</button>
+          </div>
         </div>
 
-        <!-- PROGRESS -->
-        <div style="margin-bottom:10px;">
-            <div style="display:flex; justify-content:space-between; gap:10px;">
+        <div class="bench-progress-panel">
+            <div class="bench-progress-labels">
                 <div id="benchModel">Model: —</div>
                 <div id="benchPromptProgress">Prompt: 0/0</div>
                 <div id="benchProgressPct">0%</div>
             </div>
 
-            <div style="width:100%; margin-top:6px; height:14px; background:rgba(255,255,255,0.08); border-radius:10px; overflow:hidden;">
-                <div id="benchProgressFill"
-                     style="height:100%; width:0%; background:rgba(46,204,113,0.85); transition:width .3s;"></div>
+            <div class="bench-progress-track">
+                <div id="benchProgressFill" class="bench-progress-fill"></div>
             </div>
         </div>
+        </section>
 
-        <hr style="opacity:.2;">
-
-        <!-- Benchmark Questions Editor -->
-
+        <details class="bench-prompt-disclosure">
+          <summary>
+            <span>CE Benchmark Questions</span>
+            <span class="bench-prompt-count">5 prompts</span>
+          </summary>
         <div class="bench-prompt-editor">
             <div class="bench-prompt-editor-head">
                 <div>
-                    <h3>CE Benchmark Questions</h3>
+                    <h3>Edit Questions</h3>
                     <div class="bench-prompt-editor-subtitle">These 5 prompts are used for benchmark runs. Defaults test practical reasoning, troubleshooting, explanation quality, planning, and uncertainty handling.</div>
                 </div>
                 <button id="benchPromptsSaveBtn" type="button" class="bench-prompts-save-btn">Save Questions</button>
@@ -423,11 +436,27 @@
                 <div class="bench-prompt-editor-empty">Loading benchmark questions...</div>
             </div>
         </div>
+        </details>
 
-        <!-- TABLE -->
-        <h3 style="margin:10px 0;">Best run per model</h3>
-        <div class="table-wrap">
+        <section class="bench-results-section" aria-labelledby="benchResultsTitle">
+        <div class="bench-section-header">
+            <h3 id="benchResultsTitle">Best run per model</h3>
+            <span id="benchResultsCount" class="bench-results-count">Loading...</span>
+        </div>
+        <div class="table-wrap bench-table-wrap" role="region" aria-label="Best benchmark run per model" tabindex="0">
             <table id="benchBestTable" class="u-full-width">
+                <colgroup>
+                    <col class="bench-col-present">
+                    <col class="bench-col-status">
+                    <col class="bench-col-model">
+                    <col class="bench-col-size">
+                    <col class="bench-col-avg">
+                    <col class="bench-col-range">
+                    <col class="bench-col-tokens">
+                    <col class="bench-col-total">
+                    <col class="bench-col-ended">
+                    <col class="bench-col-actions">
+                </colgroup>
                 <thead>
                     <tr>
                         <th title="Is this model currently present in the scan directory?">Present</th>
@@ -447,15 +476,21 @@
                 </tbody>
             </table>
         </div>
+        </section>
 
-        <!-- DETAILS -->
-        <div id="benchDetails" class="bench-details-render"></div>
+      </div>
+      <section id="benchDetailsView" class="bench-details-view" aria-labelledby="benchDetailsTitle" hidden>
+        <div class="bench-detail-toolbar">
+            <button id="benchBackToResultsBtn" type="button" class="bench-back-btn">Back to Results</button>
+            <h3 id="benchDetailsTitle">Selected run details</h3>
+        </div>
+        <div id="benchDetails" class="bench-details-render" aria-live="polite"></div>
+      </section>
 
     </div>
 </div>
 {% endif %}
 
-<!-- Admin Drawer -->
 {% if session.get('role') == 'admin' %}
 <div id="adminDrawer" class="drawer">
     <div class="admin-drawer-header">
@@ -464,19 +499,26 @@
     </div>
     <div class="admin-settings-panel">
         <input type="hidden" id="adminCsrfToken" value="{{ csrf_token() }}">
+        <div class="admin-settings-grid">
+        <section class="admin-section admin-system-section">
+        <div class="admin-section-heading">
+            <h3>System &amp; Bootstrap</h3>
+            <p>Software version and bootstrap database endpoint.</p>
+        </div>
+        <div class="admin-system-summary">
         <div class="params-grid">
             <div class="form-row">
               <label for="versionDisplay">Software Version:</label>
               <input type="text" id="versionDisplay" readonly>
             </div>
         </div>
-        <div style="margin-top:8px; opacity:0.8; font-size:0.92em;">
+        <div class="admin-config-path">
             Modify system bootstrap config at: <code>{{ bootstrap_config_path }}</code>
         </div>
+        </div>
 
-        <hr>
-
-        <h3>Bootstrap Database</h3>
+        <div class="admin-system-db">
+        <h4>Bootstrap Database</h4>
         <div class="params-grid">
             <div class="form-row">
               <label for="dbHostInput">MySQL Host:</label>
@@ -487,26 +529,25 @@
               <input type="number" id="dbPortInput" min="1" max="65535">
             </div>
         </div>
+        </div>
 
-        <hr>
+        </section>
 
-        <h3>Model Management</h3>
-            <div class="params-grid">
-            <div class="form-row">
-                <label>Add GGUF models to the configured Models DIR, then rescan.</label>
-                
+        <section class="admin-section admin-section-wide admin-registry-section">
+            <div class="admin-registry-head">
+            <div class="admin-section-heading">
+                <h3>Model Registry</h3>
+                <p>Discover GGUF files and control model availability, favorites, and benchmark eligibility.</p>
             </div>
+            <div id="adminRegistryStatus" class="admin-registry-status"></div>
+            </div>
+
+            <div class="params-grid admin-registry-toolbar">
             <div class="form-row">
+                <label>&nbsp;</label>
                 <button type="button" id="adminRescanModelsBtn" class="start-model-btn">🔄 Rescan Models</button>
             </div>
-            </div>
 
-            <hr>
-
-            <h3>Model Registry</h3>
-
-            <!-- Registry controls -->
-            <div class="params-grid">
             <div class="form-row">
                 <label>&nbsp;</label>
                 <button type="button" id="adminRegistryRefreshBtn" class="start-model-btn">🔃 Refresh Registry</button>
@@ -522,18 +563,21 @@
                 <button type="button" id="adminRegistryDisableAllBtn" class="start-model-btn">🚫 Disable All</button>
             </div>
 
-            <div class="form-row">
-                <div id="adminRegistryStatus" style="opacity:0.9; font-size:0.95em;"></div>
-            </div>
             </div>
 
-            <!-- Registry list -->
-            <div class="table-wrap" style="margin-top:10px;">
+            <div class="table-wrap admin-registry-table-wrap">
             <table class="u-full-width" id="adminRegistryTable">
+                <colgroup>
+                    <col class="admin-registry-state-col">
+                    <col class="admin-registry-name-col">
+                    <col class="admin-registry-size-col">
+                    <col class="admin-registry-date-col">
+                    <col class="admin-registry-actions-col">
+                </colgroup>
                 <thead>
                     <tr>
                         <th>🚦</th>
-                        <th style="width: 150px;">Filename</th>
+                        <th>Filename</th>
                         <th>Size (GB)</th>
                         <th>File Date</th>
                         <th>Actions</th>
@@ -543,9 +587,13 @@
             </table>
             </div>
 
-            <hr>
+        </section>
 
-        <h3>Model Default Settings</h3>
+        <section class="admin-section admin-defaults-section">
+        <div class="admin-section-heading">
+            <h3>Model Default Settings</h3>
+            <p>Default runtime values used when loading models.</p>
+        </div>
 
         <div class="params-grid">
             <div class="form-row">
@@ -598,9 +646,13 @@
             </div>
         </div>
 
-        <hr>
+        </section>
 
-        <h3>Attachment Settings</h3>
+        <section class="admin-section admin-attachments-section">
+        <div class="admin-section-heading">
+            <h3>Attachment Settings</h3>
+            <p>Limits applied to uploaded files and extracted context.</p>
+        </div>
 
         <div class="params-grid">
             <div class="form-row">
@@ -629,10 +681,14 @@
             </div>
         </div>
 
-        <hr>
+        </section>
 
-        <h3>Auth Email Settings</h3>
-        <div id="authReadinessPanel" style="margin: 8px 0 14px 0; padding: 10px; border: 1px solid rgba(255,255,255,0.14); border-radius: 8px; font-size: 0.95em;"></div>
+        <section class="admin-section admin-section-wide admin-auth-section">
+        <div class="admin-section-heading">
+            <h3>Auth Email Settings</h3>
+            <p>SMTP delivery and account email token settings.</p>
+        </div>
+        <div id="authReadinessPanel" class="admin-auth-readiness"></div>
         <div class="params-grid">
             <div class="form-row">
               <label for="authSmtpEnabled">SMTP Enabled:</label>
@@ -680,8 +736,10 @@
             </div>
         </div>
 
-        <hr>
-        <div class="button-row">
+        </section>
+        </div>
+
+        <div class="button-row admin-settings-actions">
             <button id="saveSettingsBtn" class="start-model-btn">💾 Save Settings</button>
             <button id="exportSettingsBackupBtn" class="start-model-btn" type="button" onclick="exportSettingsBackup()">⬇️ Export Settings Backup</button>
         </div>
@@ -690,11 +748,10 @@
 </div>
 {% endif %}
 
-<!-- About Modal Overlay (Hidden by default) -->
 {% set about_version = version %}
 {% include "_about_modal.html" %}
 
-<!-- User Settings -->
+
   <div class="settings-modal-overlay" id="userSettingsModal" style="display:none;">
     <div class="user-modal-card">
       <button class="user-close-btn" onclick="toggleUserSettingsModal(false)">✖</button>
@@ -738,19 +795,25 @@
   </div>
     
 <script>
-    /* Called on every key press (except Enter) to keep the textarea height in sync */
     function handleKey(e){
-        if (e.key !== 'Enter' || e.shiftKey) return;
+        if (e.key !== 'Enter') return;
 
-        e.preventDefault();                  // stop normal newline insert
+        if (e.isComposing || e.keyCode === 229) return;
+
+        if (e.shiftKey || (typeof e.getModifierState === 'function' && e.getModifierState('Shift'))) return;
+
+        const isMobileInput = (typeof isMobile === 'function' ? isMobile() : window.innerWidth <= 1080)
+            || (window.matchMedia && window.matchMedia("(pointer: coarse)").matches);
+        if (isMobileInput) return;
+
+        e.preventDefault();
         sendChat();
     }
 
-    /* Auto-grow logic keeps height within max-height and shows scrollbar when needed. */
     function autoResize(el) {
-        const MAX_HEIGHT = parseInt(getComputedStyle(el).maxHeight,10);   // 120px
+        const MAX_HEIGHT = parseInt(getComputedStyle(el).maxHeight,10);
 
-        el.style.height = 'auto';                     /* reset so scrollHeight recalculates     */
+        el.style.height = 'auto';
 
         if (el.scrollHeight > MAX_HEIGHT){
             el.style.overflowY = 'auto';
@@ -765,7 +828,6 @@
 
         let url = '/analytics/admin_export_chats?format=' + encodeURIComponent(format);
 
-        // Optional user ID filter if the field is present.
         if (!allUsers) {
             const uid = (document.getElementById("adminChatUserId")?.value || "").trim();
             if (!uid) { showCustomAlert("Enter a User ID first."); return; }
@@ -781,15 +843,13 @@
             }
 
             function formatUnixTimestamp(ts) {
-                // Accept seconds or milliseconds (and string numbers)
                 const n = Number(ts);
                 if (!Number.isFinite(n) || n <= 0) return "—";
 
-                const ms = (n > 1e12) ? n : (n * 1000); // > 1e12 is almost certainly ms already
+                const ms = (n > 1e12) ? n : (n * 1000);
                 const d = new Date(ms);
                 if (isNaN(d.getTime())) return "—";
 
-                // Local readable
                 return d.toLocaleString(undefined, {
                     year: "numeric",
                     month: "short",
@@ -856,8 +916,8 @@
             .then(data => {
                 if (data.status === "success") {
                 showCustomAlert("Deleted " + data.deleted_rows + " rows for user " + data.user_id);
-                adminLoadChatUsers(); // refresh table
-                loadChatHistory();    // refresh sidebar list if you want
+                adminLoadChatUsers();
+                loadChatHistory();
                 } else {
                 showCustomAlert("Delete failed: " + (data.message || "Unknown error"));
                 }
@@ -926,7 +986,6 @@
         .then(data => {
             if (data.status === "success") {
             showCustomAlert("Deleted " + (data.deleted_rows ?? 0) + " rows.");
-            // refresh admin table + sidebar
             adminLoadChatUsers();
             if (typeof loadChatHistory === "function") loadChatHistory();
             const msg = document.getElementById("chatMessages");
@@ -993,8 +1052,8 @@
                 .then(data => {
                 if (data.status === "success") {
                     showCustomAlert("All chat history deleted.");
-                    loadChatHistory(); // <-- This reloads the sidebar
-                    document.getElementById("chatMessages").innerHTML = ""; // Optionally clear messages too
+                    loadChatHistory();
+                    document.getElementById("chatMessages").innerHTML = "";
                 } else {
                     showCustomAlert("Failed to clear chat history.");
                 }
@@ -1058,7 +1117,6 @@
             const checks = checkPasswordRequirements(pw, policy);
             reqBox.innerHTML = renderPasswordRequirements(checks, policy);
 
-            // Simple feedback for password match
             if (pw2Input && pw2Input.value.length > 0) {
             if (pw === pw2Input.value) {
                 matchAlert.textContent = "✅ Passwords match!";
@@ -1083,10 +1141,9 @@
         
         window.addEventListener('resize', function() {
             const drawerBar = document.querySelector('.drawer-bar');
-            // Adjust 1080 to your mobile breakpoint
             if (window.innerWidth > 1080) {
                 drawerBar.classList.remove('hidden');
-                drawerBar.style.display = ''; // fallback to CSS default
+                drawerBar.style.display = '';
             }
         });
 

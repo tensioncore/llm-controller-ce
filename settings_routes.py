@@ -472,7 +472,6 @@ def get_settings():
     ensure_auth_settings_seeded()
     bootstrap_config = _get_current_bootstrap_config()
 
-    # LLM defaults
     scan_directory = _get_db_setting("llm.scan_directory")
     version = _get_db_setting("app.version")
     llama_server_path = _get_db_setting("llm.llama_server_path")
@@ -789,7 +788,6 @@ def update_password_policy():
     uid = session.get("user_id")
     level = data["password_policy"]
 
-    # Write level
     set_setting("security.password_policy.level", level, "string", updated_by_user_id=uid)
 
     if level == "custom":

@@ -3,8 +3,9 @@ from gevent import monkey
 monkey.patch_all()
 
 from datetime import timedelta
+import re
 
-from flask import Flask, jsonify, redirect, render_template, request, session, url_for
+from flask import Flask, abort, jsonify, redirect, render_template, request, session, url_for
 from flask_cors import CORS
 from flask_wtf import CSRFProtect
 from flask_wtf.csrf import CSRFError
@@ -134,9 +135,7 @@ def _configure_normal_mode(app: Flask):
     with app.app_context():
         ensure_auth_schema_ready()
 
-    @app.route("/")
-    @login_required()
-    def index():
+    def render_chat_shell():
         version = str(get_setting("app.version") or "").strip()
         settings = get_password_settings()
         return render_template(
@@ -146,6 +145,19 @@ def _configure_normal_mode(app: Flask):
             settings=settings,
             bootstrap_config_path=app.config.get("BOOTSTRAP_CONFIG_PATH"),
         )
+
+    @app.route("/")
+    @login_required()
+    def index():
+        return render_chat_shell()
+
+    @app.route("/<session_id>")
+    @login_required()
+    def index_chat_session(session_id):
+        if not re.fullmatch(r"(?=.{6,128}$)(?=.*-)(?=.*\d)[A-Za-z0-9_-]+", session_id or ""):
+            abort(404)
+
+        return render_chat_shell()
 
 
 def _request_wants_json():

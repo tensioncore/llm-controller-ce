@@ -8,7 +8,7 @@
 
 > **Local GGUF chat, control, and runtime visibility through a configured `llama-server` runtime.**
 
-LLM Controller CE v1.0 is a self-hosted, local-first browser app for operating local GGUF models: chat-first interaction, admin-controlled model discovery, loading, stopping, runtime settings, live logs, GPU/runtime visibility, analytics, benchmarks, installation, and user administration.
+LLM Controller CE is a self-hosted, local-first browser app for operating local GGUF models: chat-first interaction, admin-controlled model discovery, loading, stopping, runtime settings, live logs, GPU/runtime visibility, analytics, benchmarks, installation, and user administration.
 
 Validated on Windows and Ubuntu when a compatible `llama-server` runtime is configured. GPU visibility supports NVIDIA and AMD telemetry where local tools and drivers are available.
 
@@ -36,7 +36,7 @@ LLM Controller CE changes that.
 
 It combines the operational side and the everyday usage side of local GGUF model operation into one unified web interface, including:
 
-- **Persistent Chat Workspace**
+- **Persistent Chat Workspace with sidebar search**
 - **Reasoning-Aware Responses**
 - **Managed Model Library**
 - **File-Aware Conversations**
@@ -52,7 +52,7 @@ It combines the operational side and the everyday usage side of local GGUF model
 ## Highlights
 
 ### Persistent Chat Workspace
-Stream responses live, stop generation mid-stream, regenerate the latest answer, edit the latest prompt, and keep conversations organized through saved chat sessions with auto-generated titles.
+Stream responses live, stop generation mid-stream, regenerate the latest answer, edit the latest prompt, and keep conversations organized through saved chat sessions with auto-generated titles, a searchable chat sidebar, and direct chat URLs that preserve the active chat across page refreshes.
 
 ![LLM Controller CE Chat Interface](docs/images/chat-screenshot.png)
 
@@ -70,12 +70,12 @@ Scan a configured model directory for GGUF files, maintain a registry of availab
 Attach supported text-based files directly to prompts. LLM Controller CE applies server-side limits, chunks supported text content, and adds attachment context to the model request.
 
 ### Benchmarks
-Run administrator-controlled benchmarks across eligible models, edit the benchmark prompt set, review best-run summaries, inspect detailed saved outputs, and clearly distinguish current results from stale ones after prompt changes.
+Run administrator-controlled benchmarks across eligible models, edit the benchmark prompt set, review best-run summaries, move between summary and detailed saved outputs, and clearly distinguish current results from stale ones after prompt changes.
 
 ![Benchmark Dashboard](docs/images/benchmark.png)
 
 ### Runtime Visibility
-Watch live `llama-server` logs, runtime status, active process visibility, GPU telemetry where available, and per-model analytics without needing a separate dashboard.
+Watch live `llama-server` logs, runtime status, active process visibility, system RAM used/total, GPU telemetry where available, and per-model analytics without needing a separate dashboard.
 
 ![Logs and Runtime Visibility](docs/images/logs.png)
 

@@ -1,7 +1,3 @@
-/* /core/_utils.js
-   Shared UI + formatting helpers.
-*/
-
 const COPY_BUTTON_TEXT = "\u{1F4CB} Copy";
 const COPY_BUTTON_SUCCESS_TEXT = "\u2705 Copied!";
 
@@ -41,7 +37,6 @@ function copyTextToClipboard(text, button) {
   const normalizedText = normalizeCopiedCodeText(getCopySourceText(text, button));
   const resetText = getCopyButtonResetText(button);
 
-  // Try Clipboard API first
   if (navigator.clipboard && window.isSecureContext) {
     navigator.clipboard.writeText(normalizedText).then(() => {
       if (button) {
@@ -75,7 +70,6 @@ function fallbackCopy(text, button) {
   document.body.removeChild(textarea);
 }
 
-// Helper to escape HTML in <pre>
 function escapeHtml(text) {
   return text.replace(/[&<>"']/g, function(m) {
     return ({
@@ -206,7 +200,6 @@ function renderSafeMarkdown(markdownText) {
 window.sanitizeMarkdownHtml = sanitizeMarkdownHtml;
 window.renderSafeMarkdown = renderSafeMarkdown;
 
-// Helper: format time in seconds
 function formatTime(seconds) {
   seconds = Number(seconds);
   if (seconds >= 60) {
@@ -242,7 +235,6 @@ function extractAndStandardizeMath(content) {
   return content;
 }
 
-// Custom alert function for a modern modal alert that dismisses on tap.
 function showCustomAlert(message, isHTML = false) {
   const modal = document.createElement("div");
   modal.style.position = "fixed";

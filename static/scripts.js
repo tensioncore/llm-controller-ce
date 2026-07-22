@@ -3,7 +3,6 @@ document.addEventListener('DOMContentLoaded', function() {
   restorePromptDraftAfterReload();
 });
 
-// Prefixes for our new blueprint-based endpoints
 const CHAT_PREFIX       = '/chat';
 window.MODEL_PREFIX = '/model';
 const SETTINGS_PREFIX   = '/settings';
@@ -12,22 +11,108 @@ const ANALYTICS_PREFIX  = '/analytics';
 const BENCH_PREFIX = '/benchmark';
 window.BENCH_PREFIX = BENCH_PREFIX;
 
-// Expose prefixes for other modules.
 window.CHAT_PREFIX = CHAT_PREFIX;
 window.SETTINGS_PREFIX = SETTINGS_PREFIX;
 window.ANALYTICS_PREFIX = ANALYTICS_PREFIX;
+
+const LEGACY_CHAT_URL_PARAMS = ["session_id", "chat_id"];
+const SESSION_PATH_PATTERN = /^(?=.{6,128}$)(?=.*-)(?=.*\d)[A-Za-z0-9_-]+$/;
+
+function normalizeSessionId(value) {
+  return String(value || "").trim();
+}
+
+function getSessionIdFromUrl() {
+  try {
+    const pathSessionId = normalizeSessionId(decodeURIComponent((window.location.pathname || "").replace(/^\/+|\/+$/g, "")));
+    if (SESSION_PATH_PATTERN.test(pathSessionId)) {
+      return pathSessionId;
+    }
+
+    const params = new URLSearchParams(window.location.search || "");
+    for (const paramName of LEGACY_CHAT_URL_PARAMS) {
+      const paramSessionId = normalizeSessionId(params.get(paramName));
+      if (paramSessionId) return paramSessionId;
+    }
+  } catch (_) {
+    // Fall through to no URL-selected chat.
+  }
+  return "";
+}
+
+function updateChatSessionUrl(sessionId) {
+  if (!window.history || typeof window.history.replaceState !== "function") return;
+
+  try {
+    const url = new URL(window.location.href);
+    const normalizedSessionId = normalizeSessionId(sessionId);
+    if (normalizedSessionId) {
+      url.pathname = `/${encodeURIComponent(normalizedSessionId)}`;
+    } else {
+      url.pathname = "/";
+    }
+    for (const paramName of LEGACY_CHAT_URL_PARAMS) {
+      url.searchParams.delete(paramName);
+    }
+
+    const nextUrl = url.toString();
+    if (nextUrl !== window.location.href) {
+      window.history.replaceState({}, "", nextUrl);
+    }
+  } catch (_) {
+    // URL state is best-effort; chat selection should continue to work without it.
+  }
+}
+
+function getStoredCurrentSessionId() {
+  try {
+    return normalizeSessionId(localStorage.getItem("currentSessionId"));
+  } catch (_) {
+    return "";
+  }
+}
+
+function storeCurrentSessionId(sessionId) {
+  const normalizedSessionId = normalizeSessionId(sessionId);
+  try {
+    if (normalizedSessionId) {
+      localStorage.setItem("currentSessionId", normalizedSessionId);
+    } else {
+      localStorage.removeItem("currentSessionId");
+    }
+  } catch (_) {
+    // Local storage is only continuity support; the URL remains authoritative on refresh.
+  }
+}
+
+function setCurrentSessionId(sessionId, options = {}) {
+  currentSessionId = normalizeSessionId(sessionId) || null;
+  storeCurrentSessionId(currentSessionId);
+  if (options.updateUrl !== false) {
+    updateChatSessionUrl(currentSessionId);
+  }
+  highlightActiveChatSession();
+}
+
+function clearCurrentSessionId(options = {}) {
+  currentSessionId = null;
+  storeCurrentSessionId("");
+  if (options.updateUrl !== false) {
+    updateChatSessionUrl("");
+  }
+  highlightActiveChatSession();
+}
 
 const socket = io({
   path: '/socket.io'
 });
 
-// Expose socket for modules that expect window.socket.
 window.socket = socket;
 
-let currentSessionId = localStorage.getItem("currentSessionId") || null;
+let currentSessionId = getSessionIdFromUrl() || getStoredCurrentSessionId() || null;
 let isResponding = false;
-let pendingSessionId = null;     // queue session switch during streaming
-let pendingReloadCurrent = false; // optional: refresh current chat after stream ends
+let pendingSessionId = null;
+let pendingReloadCurrent = false;
 let modelLoaded = false;
 let modelStartInProgress = false;
 let pendingModelStartName = "";
@@ -43,6 +128,8 @@ let lastNonZeroGpuLayersValue = null;
 let fixedLayoutMetricsQueued = false;
 let socketJoinedChatSessionId = null;
 const STALE_PAGE_PROMPT_DRAFT_KEY = "llmcontroller.pendingPromptDraft";
+let chatHistorySessions = [];
+let initialUrlSessionHandled = false;
 
 const SUPPORTED_ATTACHMENT_EXTENSIONS = [
   ".txt", ".md", ".py", ".js", ".ts", ".html", ".css", ".json", ".xml",
@@ -325,7 +412,6 @@ function syncModelDrawerRuntimeState(runtime) {
 function requestLoadChat(sessionId, reason = "") {
   if (!sessionId) return;
 
-    // If streaming, never mutate DOM. Queue it.
     if (isResponding) {
         pendingSessionId = sessionId;
         return;
@@ -676,25 +762,15 @@ function getPayloadByteSize(payload) {
   return serialized.length;
 }
 
-// --- Handle tab/page focus or visibility change to repair chat display ---
 document.addEventListener('visibilitychange', handleVisibilityOrFocusReturn);
 window.addEventListener('focus', handleVisibilityOrFocusReturn);
 
 function handleVisibilityOrFocusReturn() {
-  // Only act if we're now visible or focused
   if (!(document.visibilityState === "visible" || document.hasFocus())) return;
 
-  // Phase 3: NEVER reload/clear chat DOM mid-stream. Only repair socket.
   if (typeof socket?.connected === "boolean" && !socket.connected) {
     socket.connect();
   }
-
-  // Optional (disabled): if you truly want a refresh when not responding, do it safely.
-  /*
-  if (!isResponding && currentSessionId) {
-    loadChat(currentSessionId);
-  }
-  */
 }
 
 function sendDebugChat() {
@@ -714,7 +790,6 @@ function sendDebugChat() {
         outputText = JSON.stringify(data, null, 2);
       }
 
-      // Modal content with pre/code block and a button
       const modalHTML = `
         <h3 style="margin-top:0;">Debug Output</h3>
         <pre id="debugModalPre" style="max-height:600px; overflow:auto; background:#222; color:#fff; padding:10px; border-radius:8px; text-align:left; font-size:14px;">${escapeHtml(outputText)}</pre>
@@ -723,14 +798,13 @@ function sendDebugChat() {
       `;
       showCustomAlert(modalHTML, true);
 
-      // Attach copy handler after modal is added
       setTimeout(() => {
         const btn = document.getElementById("copyDebugModalBtn");
         const pre = document.getElementById("debugModalPre");
         if (btn && pre) {
           btn.onclick = function (event) {
             event.preventDefault();
-            event.stopPropagation(); // Prevent modal close
+            event.stopPropagation();
             copyTextToClipboard(pre.textContent || "", btn);
           };
         }
@@ -755,8 +829,7 @@ async function createNewSession(options = {}) {
       throw new Error("Failed to create a new chat session.");
     }
 
-    currentSessionId = data.session_id;
-    localStorage.setItem("currentSessionId", currentSessionId);
+    setCurrentSessionId(data.session_id);
     syncSocketChatSessionSubscription(currentSessionId);
     loadChatHistory();
     return currentSessionId;
@@ -784,6 +857,56 @@ function groupSessions(sessions) {
   return grouped;
 }
 
+function getChatHistorySearchTerm() {
+  const input = document.getElementById("chatHistorySearch");
+  return input ? String(input.value || "").trim().toLowerCase() : "";
+}
+
+function getFilteredChatSessions(sessions) {
+  const term = getChatHistorySearchTerm();
+  if (!term) return sessions || [];
+
+  return (sessions || []).filter(session => {
+    const name = String(session.session_name || "").toLowerCase();
+    const sessionId = String(session.session_id || "").toLowerCase();
+    return name.includes(term) || sessionId.includes(term);
+  });
+}
+
+function sessionExistsInHistory(sessionId, sessions = chatHistorySessions) {
+  const normalizedSessionId = normalizeSessionId(sessionId);
+  if (!normalizedSessionId) return false;
+  return (sessions || []).some(session => normalizeSessionId(session.session_id) === normalizedSessionId);
+}
+
+function highlightActiveChatSession() {
+  const chatList = document.getElementById("chatHistory");
+  if (!chatList) return;
+
+  chatList.querySelectorAll(".chat-session-row").forEach(row => {
+    row.classList.toggle("active", normalizeSessionId(row.dataset.sessionId) === normalizeSessionId(currentSessionId));
+  });
+}
+
+function handleInitialChatUrlState(sessions) {
+  if (initialUrlSessionHandled) return;
+  initialUrlSessionHandled = true;
+
+  const urlSessionId = getSessionIdFromUrl();
+  if (!urlSessionId) return;
+
+  if (!sessionExistsInHistory(urlSessionId, sessions)) {
+    if (normalizeSessionId(currentSessionId) === urlSessionId) {
+      clearCurrentSessionId();
+    } else {
+      updateChatSessionUrl("");
+    }
+    return;
+  }
+
+  requestLoadChat(urlSessionId, "initial_url");
+}
+
 function closeSidebarOnMobile() {
   if (window.innerWidth <= 1080) {
     document.querySelector('.sidebar').classList.remove('open');
@@ -792,9 +915,11 @@ function closeSidebarOnMobile() {
 }
 
 function displayGroupedSessions(sessions) {
-  const grouped = groupSessions(sessions);
+  const visibleSessions = getFilteredChatSessions(sessions || []);
+  const grouped = groupSessions(visibleSessions);
   const chatList = document.getElementById("chatHistory");
   chatList.innerHTML = "";
+  let renderedCount = 0;
 
   ["Today", "Yesterday", "Beyond"].forEach(category => {
     if (grouped[category].length > 0) {
@@ -806,14 +931,21 @@ function displayGroupedSessions(sessions) {
       
       grouped[category].forEach(session => {
         const li = document.createElement("li");
+        li.className = "chat-session-row";
+        li.dataset.sessionId = session.session_id;
+        li.classList.toggle("active", normalizeSessionId(session.session_id) === normalizeSessionId(currentSessionId));
         const span = document.createElement("span");
-        span.textContent = session.session_name;
+        span.textContent = session.session_name || "New Chat";
+        span.title = span.textContent;
         li.onclick = () => {
           requestLoadChat(session.session_id, "sidebar_click");
           closeSidebarOnMobile();
         };        
           
         const renameBtn = document.createElement("button");
+        renameBtn.type = "button";
+        renameBtn.title = "Rename chat";
+        renameBtn.setAttribute("aria-label", "Rename chat");
         renameBtn.textContent = "✏️";
         renameBtn.onclick = (event) => {
           event.stopPropagation();
@@ -821,20 +953,35 @@ function displayGroupedSessions(sessions) {
         };
 
         const deleteBtn = document.createElement("button");
+        deleteBtn.type = "button";
+        deleteBtn.title = "Delete chat";
+        deleteBtn.setAttribute("aria-label", "Delete chat");
         deleteBtn.textContent = "❌";
         deleteBtn.onclick = (event) => {
           event.stopPropagation();
           deleteSession(session.session_id);
         };
 
+        const actions = document.createElement("div");
+        actions.className = "chat-session-actions";
+        actions.appendChild(renameBtn);
+        actions.appendChild(deleteBtn);
+
         li.appendChild(span);
-        li.appendChild(renameBtn);
-        li.appendChild(deleteBtn);
+        li.appendChild(actions);
 
         chatList.appendChild(li);
+        renderedCount += 1;
       });
     }
   });
+
+  if (renderedCount === 0 && getChatHistorySearchTerm()) {
+    const empty = document.createElement("li");
+    empty.className = "chat-history-empty";
+    empty.textContent = "No matching chats";
+    chatList.appendChild(empty);
+  }
 }
 
 function updateChatForSidebar() {
@@ -1245,10 +1392,15 @@ document.addEventListener("DOMContentLoaded", () => {
   const chatAttachmentInput = document.getElementById("chatAttachmentInput");
   const chatContainer = document.querySelector(".chat-container");
   const scrollToBottomBtn = document.getElementById("scrollToBottomBtn");
+  const chatHistorySearch = document.getElementById("chatHistorySearch");
 
-  if (chatMessages && chatMessages.children.length === 0) {
-    localStorage.removeItem("currentSessionId");
-    currentSessionId = null;
+  if (chatMessages && chatMessages.children.length === 0 && !getSessionIdFromUrl()) {
+    clearCurrentSessionId({ updateUrl: false });
+  }
+  if (chatHistorySearch) {
+    chatHistorySearch.addEventListener("input", () => {
+      displayGroupedSessions(chatHistorySessions);
+    });
   }
   if (chatAttachmentInput) {
     chatAttachmentInput.accept = SUPPORTED_ATTACHMENT_EXTENSIONS.join(",");
@@ -1277,7 +1429,6 @@ document.addEventListener("DOMContentLoaded", () => {
   sidebarToggle.addEventListener("click", () => {
     sidebar.classList.toggle("open");
     updateChatForSidebar();
-    // Close any open drawer if on mobile
     if (window.innerWidth <= 1080) {
       document.querySelectorAll('.drawer.open').forEach(drawer => {
         drawer.classList.remove('open');
@@ -1291,8 +1442,7 @@ document.addEventListener("DOMContentLoaded", () => {
       clearPromptEditState({ clearInput: true });
       clearComposerAttachments();
       syncSocketChatSessionSubscription("");
-      localStorage.removeItem("currentSessionId");
-      currentSessionId = null;
+      clearCurrentSessionId();
       createNewSession().then(() => {
         document.getElementById("chatMessages").innerHTML = "";
         closeSidebarOnMobile();
@@ -1326,19 +1476,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
   loadChatHistory();
   initModelDrawer();
-
-  document.querySelectorAll('.sidebar li').forEach(li => {
-    li.addEventListener('click', () => {
-      // Existing: load the selected chat
-      // selectChat(li); // (or whatever loads the chat)
-  
-      // Auto-close sidebar on mobile
-      if (isMobile()) {
-        document.querySelector('.sidebar').classList.remove('open');
-        updateChatForSidebar();
-      }
-    });
-  });  
 });
 
 socket.on("connect", function () {
@@ -1360,30 +1497,20 @@ function toggleDrawer(drawerId) {
   const chatInput = document.querySelector('.chat-input-container');
   const drawerBar = document.querySelector('.drawer-bar');
 
-  // If drawer doesn't exist (role-gated out), do nothing safely.
   if (!drawer) return;
 
-  // If this drawer is already open, close all and show chat UI
   if (drawer.classList.contains('open')) {
     allDrawers.forEach(d => d.classList.remove('open'));
     if (chatInput) chatInput.style.display = '';
-    // Do NOT auto-show drawer bar here: let user choose when to show controls again
-    // Optionally, always update floating button visibility:
     queueFixedLayoutMetricsUpdate();
     updateScrollToBottomButtonVisibility();
     return;
   }
 
-  // Otherwise, close all, open requested, and hide chat UI
   allDrawers.forEach(d => d.classList.remove('open'));
   drawer.classList.add('open');
   if (chatInput) chatInput.style.display = 'none';
-  if (drawerBar && drawerBar.classList.contains('hidden')) {
-    // Optionally show the "Show Controls" floating button
-    // (or whatever is your logic)
-  }
 
-  // Special behaviors (only if the functions exist)
   if (drawerId === "adminDrawer" && typeof loadSettings === "function") loadSettings();
   if (drawerId === "analyticsDrawer" && typeof window.fetchAnalytics === "function") window.fetchAnalytics();
   if (drawerId === "modelDrawer" && typeof loadModelDropdown === "function") {
@@ -1396,7 +1523,6 @@ function toggleDrawer(drawerId) {
   updateScrollToBottomButtonVisibility();
 }
 
-// This closes ALL drawers and restores chat input, leaves drawer-bar always visible
 function closeAllDrawers() {
   document.querySelectorAll('.drawer').forEach(d => d.classList.remove('open'));
   const chatInput = document.querySelector('.chat-input-container');
@@ -1705,10 +1831,23 @@ async function exportSettingsBackup() {
 }
 
 function loadChatHistory() {
-  fetch(`${CHAT_PREFIX}/get_sessions`)
+  return fetch(`${CHAT_PREFIX}/get_sessions`)
     .then(res => res.json())
     .then(data => {
-      displayGroupedSessions(data.sessions);
+      chatHistorySessions = Array.isArray(data.sessions) ? data.sessions : [];
+      displayGroupedSessions(chatHistorySessions);
+
+      if (currentSessionId && !sessionExistsInHistory(currentSessionId, chatHistorySessions)) {
+        clearCurrentSessionId();
+        syncSocketChatSessionSubscription("");
+      }
+
+      handleInitialChatUrlState(chatHistorySessions);
+      return data;
+    })
+    .catch(err => {
+      console.error(err);
+      return { sessions: [] };
     });
 }
 
@@ -1841,14 +1980,9 @@ async function sendChat() {
   socket.emit("send_message", payload);
 }
 
-/**
- * Renders a full chat entry (both user bubble and bot bubble)
- */
 function renderChatMessage(userMessage, botResponse, thoughts, metrics) {
-  // first show the user’s message
   appendUserMessage(userMessage);
 
-  // then build the bot bubble
   let botBubble = createBotBubble();
   let messageDiv = botBubble.querySelector('.message');
   messageDiv.innerHTML = "";
@@ -1861,13 +1995,11 @@ function renderChatMessage(userMessage, botResponse, thoughts, metrics) {
     window.MathJax.typesetPromise([messageDiv]);
   }
 
-  // if there were “thoughts”, render them too
   if (thoughts && thoughts.trim() !== "") {
     let thoughtsDiv = botBubble.querySelector('.thoughts');
     thoughtsDiv.textContent = thoughts.trim();
   }  
 
-  // finally, attach the metrics to the footer
   let footer = botBubble.querySelector('.footer');
   if (metrics && metrics.tps != null && metrics.response_time != null && metrics.total_tokens != null) {
     footer.innerText = formatResponseFooter(metrics);
@@ -1875,18 +2007,16 @@ function renderChatMessage(userMessage, botResponse, thoughts, metrics) {
 }
 
 function loadChat(session_id) {
-  // Phase 3 guard: never re-render chat DOM while streaming
   if (isResponding) {
     if (session_id && session_id !== currentSessionId) {
-      pendingSessionId = session_id;      // queue switch
+      pendingSessionId = session_id;
     } else {
-      pendingReloadCurrent = true;        // optional: refresh current after done
+      pendingReloadCurrent = true;
     }
     return;
   }
 
-  currentSessionId = session_id;
-  localStorage.setItem("currentSessionId", currentSessionId);
+  setCurrentSessionId(session_id);
   syncSocketChatSessionSubscription(currentSessionId);
   clearPromptEditState();
 
@@ -1902,20 +2032,16 @@ function loadChat(session_id) {
 
       if (!chats || chats.length === 0) return;
 
-      // --- 1. Generated with label at the top ---
       let firstModel = chats[0].model_used || "Unknown Model";
       chatMessages.appendChild(insertModelLabel(`Generated with: ${firstModel}`));
 
-      // --- 2. Walk messages, inserting switch labels as needed ---
       let prevModel = firstModel;
       chats.forEach((msg, i) => {
-        // Insert model switch label when model changes (not first message)
         if (i > 0 && msg.model_used && msg.model_used !== prevModel) {
           chatMessages.appendChild(insertModelLabel(`Model switched to: ${msg.model_used}`));
         }
         prevModel = msg.model_used || prevModel;
 
-        // Render messages as before
         if (!msg.user_message && !msg.bot_response) return;
         appendUserMessage(msg.user_message, {
           messageId: msg.prompt_id,
@@ -1943,12 +2069,10 @@ function loadChat(session_id) {
           }
         }
 
-        // ---- Thoughts and toggle for replayed chats ----
         const thoughtsDiv = botBubble.querySelector('.thoughts');
         const toggle = botBubble.querySelector('.show-thoughts');
 
         if (thoughtsDiv && toggle) {
-          // Only show if there are thoughts saved
           if (msg.thoughts && msg.thoughts.trim() !== "") {
             botBubble._thoughtsText = msg.thoughts.trim();
             botBubble._thoughtsExpanded = false;
@@ -1993,8 +2117,7 @@ function deleteSession(session_id) {
       clearPromptEditState({ clearInput: true });
       clearComposerAttachments();
       syncSocketChatSessionSubscription("");
-      localStorage.removeItem("currentSessionId");
-      currentSessionId = null;
+      clearCurrentSessionId();
     }
     loadChatHistory();
   });
@@ -2176,7 +2299,7 @@ function stopModel() {
       }
       showCustomAlert("Model stopped!");
       if (window.SystemDrawer && typeof window.SystemDrawer.stopLogStream === "function") {
-        window.SystemDrawer.stopLogStream();   // Stop log streaming on unload.
+        window.SystemDrawer.stopLogStream();
       }
       pollModelStatus();
     })
@@ -2312,7 +2435,7 @@ function pollModelStatus() {
   const start = () => {
     // call once immediately, then keep in sync
     pollModelStatus();
-    setInterval(pollModelStatus, 3000); // 3s is snappy; bump to 5000 if you prefer
+    setInterval(pollModelStatus, 3000);
   };
 
   if (document.readyState === "loading") {
@@ -2725,7 +2848,6 @@ socket.on("receive_message", function (data) {
     renderComposerAttachments();
     refreshAssistantBubbleControls();
     loadChatHistory();
-    // Phase 3: apply any queued chat switch after streaming finishes
     if (pendingSessionId && pendingSessionId !== currentSessionId) {
       const next = pendingSessionId;
       pendingSessionId = null;
@@ -2738,8 +2860,6 @@ socket.on("receive_message", function (data) {
       loadChat(currentSessionId);
     } else if (pendingReloadCurrent && currentSessionId) {
       pendingReloadCurrent = false;
-      // Optional: refresh current chat after done (usually unnecessary now)
-      // requestLoadChat(currentSessionId, "queued_refresh_after_done");
     }
   }
 
@@ -2774,7 +2894,6 @@ socket.on("chat_error", function (data) {
   showCustomAlert(data?.message || "An unexpected chat error occurred.");
 });
 
-// Show/hide About Modal
 function toggleAboutModal(show) {
   const modal = document.getElementById('aboutModal');
   if (show) {
@@ -2784,10 +2903,8 @@ function toggleAboutModal(show) {
   }
 }
 
-// Open modal when About button is clicked
 document.getElementById('aboutBtn').onclick = () => toggleAboutModal(true);
 
-// Close modal when clicking outside modal card
 function toggleDrawerBar() {
   const drawerBar = document.querySelector('.drawer-bar');
   const chatInput = document.querySelector('.chat-input-container');
@@ -2802,16 +2919,16 @@ function toggleDrawerBar() {
     if (isMobile()) {
       showControlsBar.style.display = 'none';
     } else {
-      showControlsBar.style.display = 'none'; // Explicitly hide on desktop!
+      showControlsBar.style.display = 'none';
     }
   } else {
     drawerBar.classList.add('hidden');
     chatInput.classList.add('drawer-bar-hidden');
     btn.innerHTML = '▲ Show Controls';
     if (isMobile()) {
-      showControlsBar.style.display = ''; // Show only on mobile
+      showControlsBar.style.display = '';
     } else {
-      showControlsBar.style.display = 'none'; // Hide on desktop!
+      showControlsBar.style.display = 'none';
     }
   }
   queueFixedLayoutMetricsUpdate();
@@ -2827,7 +2944,6 @@ function showDrawerBar() {
   drawerBar.classList.remove('hidden');
   chatInput.classList.remove('drawer-bar-hidden');
   btn.innerHTML = '▼ Hide Controls';
-  // Only show the bottom bar on mobile:
   if (isMobile()) {
     showControlsBar.style.display = 'none';
   } else {
@@ -2846,13 +2962,11 @@ function handleDrawerBarOnResize() {
   if (!drawerBar || !chatInput || !btn || !showControlsBar) return;
 
   if (!isMobile()) {
-    // Desktop: always show the drawer bar, hide mobile controls
     drawerBar.classList.remove('hidden');
     chatInput.classList.remove('drawer-bar-hidden');
     btn.innerHTML = '▼ Hide Controls';
     showControlsBar.style.display = 'none';
   } else {
-    // Mobile: if drawer bar is visible but the showControlsBar is hidden, show button as needed
     if (drawerBar.classList.contains('hidden')) {
       showControlsBar.style.display = '';
       btn.innerHTML = '▲ Show Controls';
@@ -2865,11 +2979,9 @@ function handleDrawerBarOnResize() {
 }
 function toggleUserSettingsModal(show) {
   closeAllDrawers();
-  // Now open the user settings modal
   document.getElementById('userSettingsModal').style.display = show ? 'flex' : 'none';
 }
 
-// EMAIL CHANGE
 document.getElementById('changeEmailForm').onsubmit = function(e) {
   e.preventDefault();
   const form = this;
@@ -2901,14 +3013,11 @@ document.getElementById('changeEmailForm').onsubmit = function(e) {
     });
 };
 
-// PASSWORD CHANGE
 document.getElementById('changePasswordForm').onsubmit = function(e) {
   e.preventDefault();
   const form = this;
-  // Find CSRF field inside the form
   const csrfField = form.querySelector('input[name="csrf_token"]');
   const csrfToken = csrfField ? csrfField.value : '';
-  // Collect data from named inputs
   const data = {
     old_password: form.elements["old_password"].value,
     new_password: form.elements["new_password"].value,

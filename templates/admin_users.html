@@ -4,67 +4,21 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Admin: User Management</title>
     <link rel="stylesheet" href="/static/style.css">
-    <style>
-        body { background: #181a1b; color: #e6e8ff; font-family: 'Segoe UI', Arial, sans-serif; margin: 0; }
-        .admin-container { max-width: 1080px; margin: 36px auto; padding: 18px 2vw 40px 2vw; background: #20222a; border-radius: 13px; box-shadow: 0 2px 24px #0003; }
-        h2 { margin-top: 0; font-size: 1.3em; letter-spacing: 0.02em; color: #8ac6ff; }
-        form.add-user-form { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 20px; }
-        form.add-user-form input, form.add-user-form select, form.add-user-form button {
-            font-size: 1.1em; padding: 7px 11px; border-radius: 6px; border: 1px solid #354052; background: #181a1b; color: #e6e8ff;
-        }
-        form.add-user-form button { background: #1f7fae; color: #fff; border: none; cursor: pointer; font-weight: 600; transition: background 0.15s;}
-        form.add-user-form button:hover { background: #2893ce; }
-        table.responsive-table { width: 100%; border-collapse: separate; border-spacing: 0; box-shadow: 0 2px 12px #1113; background: #242630; border-radius: 10px; overflow: hidden; margin-bottom: 2em; }
-        .responsive-table th, .responsive-table td { padding: 13px 10px; text-align: left; }
-        .responsive-table th { background: #232b37; color: #86c7ff; font-weight: 600; font-size: 1.05em;}
-        .responsive-table tr { border-bottom: 1px solid #24273d; }
-        .responsive-table tr:last-child { border-bottom: none; }
-        .responsive-table td { vertical-align: middle; }
-        .user-action-btn {
-            padding: 6px 15px; border: none; border-radius: 6px; background: #2d3849; color: #ee7171; font-size: 1.08em;
-            cursor: pointer; transition: background 0.14s, color 0.14s; font-family: inherit;
-        }
-        .user-action-btn:hover { background: #52282e; color: #fff; }
-        .user-role-admin { color: #ffe375; font-weight: 700; }
-        @media (max-width: 700px) {
-            .admin-container { padding: 10px 2vw; }
-            table.responsive-table, .responsive-table th, .responsive-table td { font-size: 0.97em; }
-            form.add-user-form { flex-direction: column; align-items: stretch; }
-        }
-        .status-dot {
-            display: inline-block;
-            width: 13px;
-            height: 13px;
-            border-radius: 50%;
-            background: #76f984;
-            margin-right: 4px;
-            box-shadow: 0 1px 5px #34ff877c;
-        }
-        .status-dot.inactive { background: #ff7b89; box-shadow: 0 1px 5px #ff7b897c; }
-        .actions-cell { min-width: 100px; }
-        .delete-user-form { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-        .delete-user-select {
-            min-width: 132px;
-            font-size: 0.95em;
-            padding: 6px 8px;
-            border-radius: 6px;
-            border: 1px solid #354052;
-            background: #181a1b;
-            color: #e6e8ff;
-        }
-        .flash-message {
-            margin-bottom: 12px;
-            padding: 10px 12px;
-            border-radius: 8px;
-            font-size: 0.98em;
-        }
-        .flash-message.success { background: #173324; color: #9ef0ba; border: 1px solid #235b3d; }
-        .flash-message.error { background: #3a2024; color: #ffb0b0; border: 1px solid #7a3a44; }
-    </style>
 </head>
-<body>
+<body class="admin-users-page">
 <div class="admin-container">
-    <h2>User Management</h2>
+    <header class="admin-users-page-header">
+        <div>
+            <h1>User Management</h1>
+            <p>Manage local accounts, temporary credentials, and password requirements.</p>
+        </div>
+        <a href="/" class="admin-back-link">Back to App</a>
+    </header>
+    <section class="admin-users-section admin-user-list-section">
+    <div class="admin-users-section-heading">
+        <h2>Users</h2>
+        <span>{{ users|length }} account{% if users|length != 1 %}s{% endif %}</span>
+    </div>
     {% with messages = get_flashed_messages(with_categories=true) %}
     {% if messages %}
     <div>
@@ -78,8 +32,9 @@
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <input type="email" name="email" placeholder="Email" required>
         <input type="hidden" name="role" value="user">
-        <button type="submit">➕ Add User</button>
+        <button type="submit" class="add-user-btn">➕ Add User</button>
     </form>
+    <div class="admin-users-table-wrap">
     <table class="responsive-table">
         <thead>
             <tr>
@@ -96,9 +51,9 @@
             <td data-label="Temp Password">
                     {% if user.temp_password %}
                       <span class="temp-pw">{{ user.temp_password }}</span>
-                      <button class="user-action-btn" type="button" data-email="{{ user.email }}" onclick="shareTempPw(this, this.dataset.email)">Share</button>
+                      <button class="user-action-btn share-user-btn" type="button" data-email="{{ user.email }}" onclick="shareTempPw(this, this.dataset.email)">Share</button>
                     {% else %}
-                      <span style="color:#7fbe7f;font-size:0.97em;">—</span>
+                      <span class="admin-muted-value">—</span>
                     {% endif %}
               </td>
             <td data-label="Status">
@@ -115,46 +70,72 @@
                         <option value="retain" selected>Retain Chats</option>
                         <option value="purge">Purge Chats</option>
                     </select>
-                    <button class="user-action-btn" type="submit" title="Delete user" onclick="return confirmDeleteUser(this.form)">🗑️</button>
+                    <button class="user-action-btn delete-user-btn" type="submit" title="Delete user" onclick="return confirmDeleteUser(this.form)">🗑️</button>
                 </form>
                 {% else %}
-                    <span title="Admin cannot be deleted" style="color:#888;font-size:1.25em;">—</span>
+                    <span title="Admin cannot be deleted" class="admin-protected-value">—</span>
                 {% endif %}
             </td>
         </tr>
         {% endfor %}
         </tbody>
     </table>
-    <h2>Password Policy Settings</h2>
+    </div>
+    </section>
+
+    <section class="admin-users-section password-policy-section">
+    <div class="admin-users-section-heading">
+        <div>
+            <h2>Password Policy</h2>
+            <p>Applied when users create, reset, or change passwords.</p>
+        </div>
+    </div>
     <form id="passwordPolicyForm" method="POST" action="{{ url_for('settings_routes.update_password_policy') }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <label>
-            <span>Policy Level:</span>
-            <select name="password_policy" id="pw_policy_level" style="margin: 0 0.5em;">
+        <label class="password-policy-level-row">
+            <span>Policy Level</span>
+            <select name="password_policy" id="pw_policy_level">
                 <option value="basic"    {% if settings.password_policy.level == "basic" %}selected{% endif %}>Basic</option>
                 <option value="moderate" {% if settings.password_policy.level == "moderate" %}selected{% endif %}>Moderate</option>
                 <option value="strong"   {% if settings.password_policy.level == "strong" %}selected{% endif %}>Strong</option>
                 <option value="custom"   {% if settings.password_policy.level == "custom" %}selected{% endif %}>Custom</option>
             </select>
         </label>
-        <div id="pw_custom_options" style="{% if settings.password_policy.level != 'custom' %}display:none;{% endif %};margin-top:0.6em;">
-            <label>Min Length: <input type="number" name="min_length" value="{{ settings.password_policy.min_length }}" min="6" max="128"></label>
+        <p id="pw_policy_description" class="password-policy-description" aria-live="polite"></p>
+        <div id="pw_custom_options" class="password-policy-custom" {% if settings.password_policy.level != 'custom' %}hidden{% endif %}>
+            <label class="password-policy-length">Min Length <input type="number" name="min_length" value="{{ settings.password_policy.min_length }}" min="6" max="128"></label>
             <label><input type="checkbox" name="require_upper" {% if settings.password_policy.require_upper %}checked{% endif %}> Require uppercase</label>
             <label><input type="checkbox" name="require_lower" {% if settings.password_policy.require_lower %}checked{% endif %}> Require lowercase</label>
             <label><input type="checkbox" name="require_digit" {% if settings.password_policy.require_digit %}checked{% endif %}> Require digit</label>
-            <label><input type="checkbox" name="require_special" {% if settings.password_policy.require_special %}checked{% endif %}> Require special</label>
+            <label><input type="checkbox" name="require_special" {% if settings.password_policy.require_special %}checked{% endif %}> Require special character</label>
         </div>
-        <button type="submit" class="btn save-btn" style="margin-top:0.7em;">Save Password Policy</button>
-        <div id="pw-policy-alert" style="margin-top:0.6em;"></div>
+        <div class="password-policy-actions">
+            <button type="submit" class="btn save-btn">Save Password Policy</button>
+            <div id="pw-policy-alert"></div>
+        </div>
     </form>
-    
-      
-    <a href="/" style="color:#9ee7ff;text-decoration:none;font-size:1.09em;">← Back to App</a>
+    </section>
 </div>
 <script>
-    document.getElementById('pw_policy_level').addEventListener('change', function() {
-        document.getElementById('pw_custom_options').style.display = (this.value === 'custom') ? 'block' : 'none';
+    const passwordPolicyDescriptions = Object.freeze({
+        basic: "At least 6 characters, including a lowercase letter.",
+        moderate: "At least 8 characters, including uppercase, lowercase, and a digit.",
+        strong: "At least 12 characters, including uppercase, lowercase, a digit, and a special character.",
+        custom: "Choose a length from 6 to 128 characters and select each required character type."
     });
+
+    function syncPasswordPolicyUi() {
+        const levelSelect = document.getElementById('pw_policy_level');
+        const customOptions = document.getElementById('pw_custom_options');
+        const description = document.getElementById('pw_policy_description');
+        if (!levelSelect || !customOptions || !description) return;
+
+        customOptions.hidden = levelSelect.value !== 'custom';
+        description.textContent = passwordPolicyDescriptions[levelSelect.value] || "";
+    }
+
+    document.getElementById('pw_policy_level').addEventListener('change', syncPasswordPolicyUi);
+    syncPasswordPolicyUi();
     
     // Password Policy AJAX submit:
     document.getElementById('passwordPolicyForm').onsubmit = function(e) {

@@ -249,10 +249,6 @@ def _require_socket_user(disconnect_on_failure=True):
     _mark_current_socket_validated(user)
     return user
 
-# --------------------------------------------------------------------------- #
-#  helper: auto-title                                                         #
-# --------------------------------------------------------------------------- #
-
 def _clean_title(raw: str) -> str:
     """
     Keep the thinking model, but ignore <think>...</think> entirely.
@@ -286,23 +282,17 @@ def _clean_title(raw: str) -> str:
     # Remove any remaining embedded think blocks (just in case)
     s = re.sub(r"<think>.*?</think>", "", s, flags=re.IGNORECASE | re.DOTALL).strip()
 
-    # Remove common prefixes
     s = re.sub(r"^(title\s*:\s*)", "", s, flags=re.IGNORECASE).strip()
 
-    # Strip surrounding quotes/backticks
     s = s.strip(" \t\r\n\"'`“”‘’")
 
-    # Keep only first line
     if "\n" in s:
         s = s.split("\n", 1)[0].strip()
 
-    # Collapse whitespace
     s = re.sub(r"\s+", " ", s).strip()
 
-    # Remove trailing punctuation
     s = re.sub(r"[.!?;:,]+$", "", s).strip()
 
-    # Enforce sidebar length
     if len(s) > 50:
         s = s[:47].rstrip() + "..."
 
@@ -327,7 +317,6 @@ def auto_generate_chat_title(user_id: int, session_id: str):
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
 
-        # First assistant response (scoped to user)
         c.execute("""
             SELECT bot_response
               FROM chats
@@ -345,7 +334,6 @@ def auto_generate_chat_title(user_id: int, session_id: str):
         if not first_response:
             return
 
-        # If already titled (not default), skip (scoped to user)
         c.execute("SELECT MIN(session_name) FROM chats WHERE user_id=? AND session_id=?", (user_id, session_id))
         cur_row = c.fetchone()
         current_name = (cur_row[0] or "").strip() if cur_row else ""
@@ -418,11 +406,9 @@ def auto_generate_chat_title(user_id: int, session_id: str):
             print(f"[WARN] auto-title produced no title for user_id={user_id} session_id={session_id}")
             return
 
-        # Update all rows so MIN(session_name) resolves to the title (scoped to user)
         c.execute("UPDATE chats SET session_name=? WHERE user_id=? AND session_id=?", (title, user_id, session_id))
         conn.commit()
 
-        # emit ONLY to this user
         prune_stale_socket_rooms(user_id)
         socketio.emit(
             "update_session_name",

@@ -1,16 +1,9 @@
-// _system.js
-// Owns: Logs drawer + GPU monitor drawer + Admin Model Registry UI
-// Requires: MODEL_PREFIX constant (defined in scripts.js), and escapeHtml() (from _utils.js)
-
 (function () {
   if (window.__systemDrawerInitialized) {
     return;
   }
   window.__systemDrawerInitialized = true;
 
-  // -----------------------
-  // Internal state
-  // -----------------------
   let logStreamIntervalId = null;
   let logPollInFlight = false;
   let logAutoRefreshEnabled = false;
@@ -22,7 +15,6 @@
   let smiDrawerObserver = null;
   let gpuMemoryChart = null;
 
-  // Registry state
   let _registryCache = [];
 
   const MODEL_PREFIX = window.MODEL_PREFIX || "/model";
@@ -37,9 +29,6 @@
       "'": "&#39;"
     })[m]);
 
-  // -----------------------
-  // Helpers
-  // -----------------------
   function $(id) { return document.getElementById(id); }
 
   function setText(el, text) {
@@ -79,7 +68,7 @@
   }
 
   function setAdminStatus(msg, ok) {
-    const el = $("adminModelMgmtStatus");
+    const el = $("adminRegistryStatus");
     if (!el) return;
     el.textContent = msg || "";
     el.style.color = ok === true ? "#7CFC90" : (ok === false ? "#ff6b6b" : "");
@@ -100,9 +89,6 @@
     try { return await res.json(); } catch { return null; }
   }
 
-  // -----------------------
-  // Logs
-  // -----------------------
   async function fetchLogs() {
     const logContent = $("logContent");
     if (!logContent) return;
@@ -163,11 +149,17 @@
 
   function syncLogStreamToDrawerState() {
     if (!isLogsDrawerOpen()) {
-      clearLogTimer();
+      stopLogStream();
       return;
     }
 
-    if (!logAutoRefreshEnabled) return;
+    if (!logAutoRefreshEnabled) {
+      const logContent = $("logContent");
+      if (logContent) setText(logContent, "Starting log stream...");
+      logAutoRefreshEnabled = true;
+      clearLogTimer();
+    }
+
     if (!logPollInFlight && !logStreamIntervalId) {
       runLogPoll();
     }
@@ -236,9 +228,6 @@
     }
   }
 
-  // -----------------------
-  // GPU telemetry
-  // -----------------------
   const GPU_HISTORY_MAX_POINTS = 12; // 12 points @ 5s polling ~= 1 minute
   const gpuHistory = {}; // { [gpuIndex]: { util: number[], mem: number[] } }
 
@@ -332,6 +321,13 @@
   }
 
   function cancelSmiFetch() {
+    if (smiFetchController && typeof smiFetchController.abort === "function") {
+      try {
+        smiFetchController.abort();
+      } catch (err) {
+        console.warn("Unable to abort GPU telemetry request:", err);
+      }
+    }
     smiFetchController = null;
   }
 
@@ -349,9 +345,13 @@
     const hasData = !!(section && section.style.display !== "none");
 
     if (!isSMIDrawerOpen()) {
-      clearSmiTimer();
-      cancelSmiFetch();
+      stopSMIAutoRefresh();
       return;
+    }
+
+    if (!smiAutoRefreshEnabled) {
+      smiAutoRefreshEnabled = true;
+      clearSmiTimer();
     }
 
     if (smiAutoRefreshEnabled) {
@@ -573,6 +573,7 @@
       const section = document.querySelector(".gpu-stats-section");
       if (section) section.style.display = "";
     } catch (err) {
+      if (err && err.name === "AbortError") return;
       setText(smiRaw, `❌ GPU telemetry error: ${err.message || String(err)}`);
       console.error("fetchSMI failed:", err);
     } finally {
@@ -586,6 +587,7 @@
     const host = $("gpuCards");
     const powerEl = $("powerUsage");
     if (!host) return;
+    renderSystemRam(data);
 
     const gpus = Array.isArray(data?.gpus) ? data.gpus : [];
     {
@@ -706,6 +708,28 @@
       return;
     }
   }
+
+  function renderSystemRam(data) {
+    const ramEl = $("systemRamUsage");
+    if (!ramEl) return;
+
+    const ram = data?.system_ram || {};
+    const usedGB = _toNumberOrNull(ram.used_gb);
+    const totalGB = _toNumberOrNull(ram.total_gb);
+    const percentUsed = _toNumberOrNull(ram.percent_used);
+
+    if (!ram.available || usedGB === null || totalGB === null || totalGB <= 0) {
+      ramEl.textContent = "\u2014";
+      ramEl.title = "System RAM unavailable";
+      return;
+    }
+
+    ramEl.textContent = `${usedGB.toFixed(1)}/${totalGB.toFixed(1)}GB`;
+    ramEl.title = percentUsed === null
+      ? `${usedGB.toFixed(1)} GB used of ${totalGB.toFixed(1)} GB`
+      : `${usedGB.toFixed(1)} GB used of ${totalGB.toFixed(1)} GB (${percentUsed.toFixed(0)}% used)`;
+  }
+
   function renderProcessTable(data) {
     const procCont = $("processList");
     if (!procCont) return;
@@ -811,9 +835,6 @@
     }
   }
 
-  // -----------------------
-  // Admin: Rescan
-  // -----------------------
   async function adminRescanModels() {
     setAdminStatus("Rescanning models…", null);
     try {
@@ -840,9 +861,6 @@
     }
   }
 
-  // -----------------------
-  // Admin: Model Registry UI
-  // -----------------------
   async function adminRegistryFetchList() {
     const tbody = $("adminRegistryTbody");
     if (!tbody) return null;
@@ -1081,9 +1099,6 @@
     }
   }
 
-  // -----------------------
-  // Wiring
-  // -----------------------
   function wireButtons() {
     const btnLogStart = $("btnLogStart");
     const btnLogStop = $("btnLogStop");

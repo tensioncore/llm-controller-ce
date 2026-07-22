@@ -1,4 +1,3 @@
-# analytics_routes.py
 import sqlite3
 import csv
 import io
@@ -9,10 +8,6 @@ from helpers import DB_PATH
 from auth import login_required
 
 analytics_routes = Blueprint('analytics_routes', __name__)
-
-# -----------------------------
-# Helpers
-# -----------------------------
 
 CHAT_INSERT_COLS = [
     "user_id",
@@ -168,10 +163,6 @@ def _require_admin_json():
         return jsonify({"status": "error", "message": "Not authorized"}), 403
     return None
 
-# -----------------------------
-# Per-user analytics
-# -----------------------------
-
 @analytics_routes.route('/', methods=['GET'])
 @login_required(roles=["admin", "user"])
 def analytics():
@@ -187,7 +178,6 @@ def analytics():
         AND model_used IS NOT NULL AND TRIM(model_used) <> ''
     """
 
-    # Total requests per model
     c.execute(f"""
         SELECT model_used, COUNT(*)
         FROM chats
@@ -196,7 +186,6 @@ def analytics():
     """, (user_id,))
     total_requests = [{"model": row[0], "total_requests": row[1]} for row in c.fetchall()]
 
-    # Avg response time per model
     c.execute(f"""
         SELECT model_used, AVG(COALESCE(response_time, 0))
         FROM chats
@@ -235,10 +224,6 @@ def analytics():
     })
 
 
-# -----------------------------
-# Admin User Analytics
-# -----------------------------
-
 @analytics_routes.route('/admin_user_token_totals', methods=['GET'])
 @login_required(roles=["admin"])
 def admin_user_token_totals():
@@ -269,10 +254,6 @@ def admin_user_token_totals():
 
     conn.close()
     return jsonify({"status": "success", "users": out})
-
-# -----------------------------
-# Per-user export/import/delete (locked)
-# -----------------------------
 
 @analytics_routes.route('/export_chats', methods=['GET'])
 @login_required(roles=["admin", "user"])
@@ -353,10 +334,8 @@ def import_chats():
         for k in IMPORT_ALLOWED:
             if k in chat:
                 row[k] = chat.get(k)
-        # required-ish keys
         sid = (row.get("session_id") or "").strip()
         if not sid:
-            # skip rows without session_id
             continue
         row["session_id"] = sid
         row["_import_row_id"] = _as_int(chat.get("id"), None)
@@ -379,7 +358,6 @@ def import_chats():
         imported_row_id_map = {}
         pending_source_links = []
         for row in normalized:
-            # Try to keep types sane
             ts = _as_int(row.get("timestamp"), None)
             tps = _as_float(row.get("tps"), None)
             rt  = _as_float(row.get("response_time"), None)
@@ -474,10 +452,6 @@ def delete_all_chats():
     conn.close()
     return jsonify({"status": "success", "message": "All chats deleted"})
 
-
-# -----------------------------
-# Admin-only: users list + per-user/all export + delete
-# -----------------------------
 
 @analytics_routes.route('/admin_chat_users', methods=['GET'])
 @login_required(roles=["admin"])

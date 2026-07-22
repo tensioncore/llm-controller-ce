@@ -25,7 +25,6 @@ from auth import login_required
 
 model_routes = Blueprint('model_routes', __name__)
 
-# --- Globals for multi-server setup ---
 main_process = None
 title_process = None
 main_log_buffer = []
@@ -2160,6 +2159,64 @@ def _get_raw_gpu_output(backend: str = None):
     return "GPU telemetry", "No supported GPU telemetry backend detected."
 
 
+def _get_system_ram_snapshot():
+    total_bytes = None
+    available_bytes = None
+
+    try:
+        if os.name == "nt":
+            import ctypes
+
+            class MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("sullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+
+            stat = MEMORYSTATUSEX()
+            stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+                total_bytes = int(stat.ullTotalPhys)
+                available_bytes = int(stat.ullAvailPhys)
+        else:
+            page_size = os.sysconf("SC_PAGE_SIZE")
+            phys_pages = os.sysconf("SC_PHYS_PAGES")
+            avail_pages = os.sysconf("SC_AVPHYS_PAGES")
+            total_bytes = int(page_size * phys_pages)
+            available_bytes = int(page_size * avail_pages)
+    except Exception:
+        total_bytes = None
+        available_bytes = None
+
+    if not total_bytes or available_bytes is None:
+        return {
+            "available": False,
+            "used_bytes": None,
+            "total_bytes": None,
+            "used_gb": None,
+            "total_gb": None,
+            "percent_used": None,
+        }
+
+    used_bytes = max(0, int(total_bytes) - int(available_bytes))
+    percent_used = (used_bytes / total_bytes) * 100 if total_bytes > 0 else None
+    return {
+        "available": True,
+        "used_bytes": used_bytes,
+        "total_bytes": int(total_bytes),
+        "used_gb": round(used_bytes / (1024 ** 3), 1),
+        "total_gb": round(int(total_bytes) / (1024 ** 3), 1),
+        "percent_used": round(percent_used, 1) if percent_used is not None else None,
+    }
+
+
 @model_routes.route('/nvidia_smi', methods=['GET'])
 @login_required(roles=["admin", "user"])
 def nvidia_smi():
@@ -2176,6 +2233,7 @@ def nvidia_smi():
         "processes": [],
         "processes_supported": False,
         "processes_message": "No supported GPU telemetry backend detected.",
+        "system_ram": _get_system_ram_snapshot(),
         "raw_command": "GPU telemetry",
         "raw_text": "No supported GPU telemetry backend detected.",
     }

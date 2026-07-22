@@ -1,13 +1,8 @@
-// benchmark_ui.js
 (function () {
   const BENCH_PREFIX = window.BENCH_PREFIX || "/benchmark";
 
-  // ----------------------------
-  // DOM helpers
-  // ----------------------------
   function byId(id) { return document.getElementById(id); }
 
-  // Try multiple possible IDs (keeps this resilient to small HTML changes)
   function pickEl(ids) {
     for (const id of ids) {
       const el = byId(id);
@@ -41,7 +36,6 @@
     }
   }
 
-  // Escape HTML in table/details
   function escapeHtml(text) {
     return String(text).replace(/[&<>"']/g, function (m) {
       return ({
@@ -54,7 +48,6 @@
     });
   }
 
-  // Robust JSON helper (handles HTML/CSRF pages too)
   async function readJsonOrText(resp) {
     const text = await resp.text().catch(() => "");
     let j = null;
@@ -66,13 +59,30 @@
     return { text, json: j };
   }
 
-  // ----------------------------
-  // State / Polling
-  // ----------------------------
   let pollTimer = null;
   let pollInFlightPromise = null;
   let pollActive = false;
   let lastState = null;
+  let lastDetailsTrigger = null;
+
+  function setBenchmarkView(view) {
+    const resultsView = byId("benchResultsView");
+    const detailsView = byId("benchDetailsView");
+    const showDetails = view === "details";
+
+    if (resultsView) resultsView.hidden = showDetails;
+    if (detailsView) detailsView.hidden = !showDetails;
+
+    const content = document.querySelector("#benchmarksDrawer .benchmarks-content");
+    if (content) content.scrollTop = 0;
+  }
+
+  function returnToBenchmarkResults() {
+    setBenchmarkView("results");
+    if (lastDetailsTrigger && document.contains(lastDetailsTrigger)) {
+      lastDetailsTrigger.focus();
+    }
+  }
 
   async function fetchBenchStatus() {
     const r = await fetch(`${BENCH_PREFIX}/status`, { method: "GET", credentials: "same-origin" });
@@ -99,7 +109,6 @@
   function renderState(state) {
     lastState = state || {};
 
-    // --- CURRENT HTML IDs (with fallbacks) ---
     const statusEl  = pickEl(["benchStatusLine", "benchStatusText"]);
     const msgEl     = pickEl(["benchMessageLine"]);
     const countsEl  = pickEl(["benchCountsLine"]);
@@ -113,7 +122,6 @@
     const fillEl    = pickEl(["benchProgressFill"]);
     const progEl    = pickEl(["benchProgressBar"]);
 
-    // Buttons (your current HTML uses benchRunBtn/benchStopBtn/benchRefreshBtn)
     const runBtn    = pickEl(["benchRunBtn", "benchStartBtn", "benchmarkRunBtn"]);
     const stopBtn   = pickEl(["benchStopBtn"]);
     const refreshBtn= pickEl(["benchRefreshBtn", "benchRefreshBestBtn", "benchRefreshBtnLegacy"]);
@@ -121,7 +129,6 @@
     const isRunning = !!state.running;
     const isStopping = (status === "stopping");
 
-    // Status lines
     setText(statusEl, status);
     setText(msgEl, state.message || "");
 
@@ -134,7 +141,6 @@
     setText(startedEl, `Started: ${fmtLocal(state.started_at)}`);
     setText(endedEl, `Ended: ${state.ended_at ? fmtLocal(state.ended_at) : "—"}`);
 
-    // Current model + prompt progress
     setText(modelEl, `Model: ${state.current_model || "—"}`);
 
     const p = computeProgress(state);
@@ -142,18 +148,15 @@
 
     if (pctEl) setText(pctEl, `${Math.round(p.pct)}%`);
 
-    // Progress bar (your HTML uses a DIV fill)
     if (fillEl) fillEl.style.width = `${p.pct}%`;
 
-    // Legacy <progress> support if it exists somewhere
     if (progEl && typeof progEl.value !== "undefined") {
       progEl.max = 100;
       progEl.value = p.pct;
     }
 
-    // Button states
     if (runBtn) {
-      runBtn.disabled = isRunning; // disable while running/stopping
+      runBtn.disabled = isRunning;
       runBtn.textContent = isRunning ? "Benchmark running..." : "Run Benchmark";
     }
     if (stopBtn) {
@@ -165,7 +168,6 @@
     }
     setBenchPromptEditorLocked(isRunning);
 
-    // Poll while running
     if (isRunning) ensurePolling();
     else stopPolling();
   }
@@ -334,9 +336,6 @@
     setBenchPromptEditorStatus(j.message || "CE benchmark questions saved.", "success");
   }
 
-  // ----------------------------
-  // Best table + sorting
-  // ----------------------------
   function injectBasicThStyling() {
     if (document.getElementById("benchInlineStyle")) return;
   
@@ -367,7 +366,6 @@
       .bench-reset-btn { opacity: 0.95; }
       .bench-present { text-align: center; font-weight: 700; }
   
-      /* Benchmark details renderer */
       .bench-details-render {
         margin-top: 12px;
         padding: 14px;
@@ -532,9 +530,6 @@
     });
   }
 
-  // ----------------------------
-  // Actions: Run, Stop, Refresh, Details, Reset Model
-  // ----------------------------
   async function runBench() {
     const forceCb    = pickEl(["benchForceCheckbox"]);
 
@@ -585,7 +580,6 @@
   async function resetBenchmarkModel(modelName, fingerprint) {
     const fp = (fingerprint || "").trim().toLowerCase();
   
-    // STRICT: must be 40 hex chars
     if (!/^[0-9a-f]{40}$/.test(fp)) {
       alert("Reset failed: invalid fingerprint (must be 40 hex chars).");
       return;
@@ -594,7 +588,6 @@
     const label = modelName ? `"${modelName}"` : "this model";
     if (!confirm(`Clear ALL benchmark history for ${label}?`)) return;
   
-    // fingerprint ONLY
     const payload = { fingerprint: fp };
   
     const r = await fetch(`${BENCH_PREFIX}/reset_model`, {
@@ -625,14 +618,24 @@
 
   async function refreshBestRuns() {
     const tableBody = pickEl(["benchBestTbody", "benchBestTableBody"]);
+    const countEl = byId("benchResultsCount");
     if (!tableBody) return;
 
+    setText(countEl, "Loading...");
+
     const r = await fetch(`${BENCH_PREFIX}/best`, { method: "GET", credentials: "same-origin" });
-    if (!r.ok) return;
+    if (!r.ok) {
+      setText(countEl, "Unavailable");
+      return;
+    }
     const j = await r.json().catch(() => ({}));
-    if (j.status !== "success") return;
+    if (j.status !== "success") {
+      setText(countEl, "Unavailable");
+      return;
+    }
 
     const rows = j.rows || [];
+    setText(countEl, `${rows.length} model${rows.length === 1 ? "" : "s"}`);
     tableBody.innerHTML = "";
 
     if (!rows.length) {
@@ -647,13 +650,13 @@
       const allowBench = (Number(row.allow_benchmark) === 1);
       const status = (row.status || "").toUpperCase();
       const statusDisplay = allowBench ? status : "DISABLED";
+      const statusClass = statusDisplay.toLowerCase().replace(/[^a-z0-9_-]/g, "-") || "unknown";
 
       const model = row.model_name || "";
       const modelDisplay = allowBench ? model : `${model} (benchmark disabled)`;
 
       const size = (row.size_gb !== undefined) ? row.size_gb : "";
 
-      // Eliminate decimals in TPS.
       const avg = Math.round(safeNum(row.avg_eval_tps, 0));
       const min = Math.round(safeNum(row.min_eval_tps, 0));
       const max = Math.round(safeNum(row.max_eval_tps, 0));
@@ -686,15 +689,15 @@
 
       tr.innerHTML = `
         <td class="bench-present" title="${escapeHtml(presentTitle)}">${escapeHtml(String(presentIcon))}</td>
-        <td>${escapeHtml(statusDisplay)}</td>
-        <td>${escapeHtml(modelDisplay)}</td>
-        <td>${escapeHtml(String(size))}</td>
-        <td>${escapeHtml(String(avg))}</td>
-        <td>${escapeHtml(`${min} / ${max}`)}</td>
-        <td>${escapeHtml(String(tokens))}</td>
-        <td>${escapeHtml(String(totalSec))}</td>
-        <td>${escapeHtml(String(ended))}</td>
-        <td>
+        <td class="bench-status-cell bench-status-${statusClass}"><span>${escapeHtml(statusDisplay)}</span></td>
+        <td class="bench-model-cell" title="${escapeHtml(modelDisplay)}"><span class="bench-model-name">${escapeHtml(modelDisplay)}</span></td>
+        <td class="bench-number">${escapeHtml(String(size))}</td>
+        <td class="bench-number">${escapeHtml(String(avg))}</td>
+        <td class="bench-number">${escapeHtml(`${min} / ${max}`)}</td>
+        <td class="bench-number">${escapeHtml(String(tokens))}</td>
+        <td class="bench-number">${escapeHtml(String(totalSec))}</td>
+        <td class="bench-ended-cell">${escapeHtml(String(ended))}</td>
+        <td class="bench-actions-cell">
           <div class="bench-actions">
             <button class="bench-details-btn"
                     data-run-id="${row.run_id}"
@@ -801,26 +804,30 @@
     const stopBtn = pickEl(["benchStopBtn"]);
     const refreshBtn = pickEl(["benchRefreshBtn", "benchRefreshBestBtn", "benchRefreshBtnLegacy"]);
     const savePromptsBtn = byId("benchPromptsSaveBtn");
+    const backToResultsBtn = byId("benchBackToResultsBtn");
 
     if (runBtn) runBtn.addEventListener("click", runBench);
     if (stopBtn) stopBtn.addEventListener("click", stopBench);
     if (savePromptsBtn) savePromptsBtn.addEventListener("click", saveBenchPrompts);
+    if (backToResultsBtn) backToResultsBtn.addEventListener("click", returnToBenchmarkResults);
     if (refreshBtn) refreshBtn.addEventListener("click", () => {
       refreshBestRuns();
       pollTick();
       loadBenchPrompts();
     });
 
-    // Details buttons (event delegation)
     document.addEventListener("click", (e) => {
       const btn = e.target && e.target.closest && e.target.closest(".bench-details-btn");
       if (!btn) return;
       const runId = btn.getAttribute("data-run-id");
       if (!runId) return;
+      lastDetailsTrigger = btn;
+      setBenchmarkView("details");
+      const backButton = byId("benchBackToResultsBtn");
+      if (backButton) backButton.focus();
       loadRunDetails(runId);
     });
 
-    // Reset buttons (event delegation)
     document.addEventListener("click", (e) => {
       const btn = e.target && e.target.closest && e.target.closest(".bench-reset-btn");
       if (!btn) return;
@@ -833,6 +840,7 @@
   }
 
   function init() {
+    setBenchmarkView("results");
     wireButtons();
     refreshBestRuns();
     loadBenchPrompts();

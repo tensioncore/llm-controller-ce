@@ -1,10 +1,3 @@
-/* analytics_ui.js
-   Analytics drawer UI: fetch, table render/sort.
-   Depends on:
-     - window.ANALYTICS_PREFIX (or const ANALYTICS_PREFIX in global scope)
-     - window.formatTime(seconds) (from _utils.js)
-*/
-
 (function () {
     "use strict";
 
@@ -40,7 +33,6 @@
           data.avg_response.forEach(item => {
             let model = item.model || "Unknown";
             models[model] = models[model] || {};
-            // stored as formatted string for display
             models[model].avg_response_time = window.formatTime(parseFloat(item.avg_response_time));
           });
   
@@ -61,23 +53,22 @@
             models[model].total_tokens = item.total_tokens;
           });
   
-          // ---- TABLE (MUST STAY) ----
-          let html = "<div align='center'><table id='analyticsTable' cellpadding='5' cellspacing='0' class='analyticsTable'><thead><tr>";
-          html += `<th data-title="Model" onclick="sortTable('analyticsTable', 0, false)">Model</th>`;
-          html += `<th data-title="Total Sent" onclick="sortTable('analyticsTable', 1, true)">Total Sent</th>`;
-          html += `<th data-title="Avg Time" onclick="sortTable('analyticsTable', 2, false)">Avg Time</th>`;
-          html += `<th data-title="Min TPS" onclick="sortTable('analyticsTable', 3, true)">Min TPS</th>`;
-          html += `<th data-title="Max TPS" onclick="sortTable('analyticsTable', 4, true)">Max TPS</th>`;
-          html += `<th data-title="Avg TPS" onclick="sortTable('analyticsTable', 5, true)">Avg TPS</th>`;
-          html += `<th data-title="TPS Viz" onclick="sortTable('analyticsTable', 6, true)">TPS Viz</th>`;
-          html += `<th data-title="# Tokens" onclick="sortTable('analyticsTable', 7, true)"># Tokens</th>`;
+          const totalTokensPlaceholder = "__ANALYTICS_TOTAL_TOKENS__";
+          let html = `<div class='analytics-table-wrap' role='region' aria-label='Analytics by model' tabindex='0'><div class='analytics-total-summary'><span>Total Tokens</span><strong>${totalTokensPlaceholder}</strong></div><table id='analyticsTable' class='analyticsTable'><colgroup><col class='analytics-model-col'><col><col><col><col><col><col class='analytics-viz-col'><col></colgroup><thead><tr>`;
+          html += `<th scope="col" class="analytics-sortable" data-title="Model" aria-label="Sort by model" onclick="sortTable('analyticsTable', 0, false)" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();sortTable('analyticsTable', 0, false)}" role="button" tabindex="0">Model</th>`;
+          html += `<th scope="col" class="analytics-sortable analytics-number" data-title="Total Sent" aria-label="Sort by total sent" onclick="sortTable('analyticsTable', 1, true)" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();sortTable('analyticsTable', 1, true)}" role="button" tabindex="0">Total Sent</th>`;
+          html += `<th scope="col" class="analytics-sortable analytics-number" data-title="Avg Time" aria-label="Sort by average response time" onclick="sortTable('analyticsTable', 2, false)" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();sortTable('analyticsTable', 2, false)}" role="button" tabindex="0">Avg Time</th>`;
+          html += `<th scope="col" class="analytics-sortable analytics-number" data-title="Min TPS" aria-label="Sort by minimum tokens per second" onclick="sortTable('analyticsTable', 3, true)" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();sortTable('analyticsTable', 3, true)}" role="button" tabindex="0">Min TPS</th>`;
+          html += `<th scope="col" class="analytics-sortable analytics-number" data-title="Max TPS" aria-label="Sort by maximum tokens per second" onclick="sortTable('analyticsTable', 4, true)" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();sortTable('analyticsTable', 4, true)}" role="button" tabindex="0">Max TPS</th>`;
+          html += `<th scope="col" class="analytics-sortable analytics-number" data-title="Avg TPS" aria-label="Sort by average tokens per second" onclick="sortTable('analyticsTable', 5, true)" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();sortTable('analyticsTable', 5, true)}" role="button" tabindex="0">Avg TPS</th>`;
+          html += `<th scope="col" class="analytics-sortable analytics-viz-heading" data-title="TPS Viz" aria-label="Sort by tokens per second visualization" onclick="sortTable('analyticsTable', 6, true)" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();sortTable('analyticsTable', 6, true)}" role="button" tabindex="0">TPS Viz</th>`;
+          html += `<th scope="col" class="analytics-sortable analytics-number" data-title="# Tokens" aria-label="Sort by total tokens" onclick="sortTable('analyticsTable', 7, true)" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();sortTable('analyticsTable', 7, true)}" role="button" tabindex="0"># Tokens</th>`;
           html += "</tr></thead><tbody>";
   
           let overallTokens = 0;
           
           for (let model in models) {
-            // Only require these two fields to render a row.
-            // Missing TPS/avg time should not delete the entire model from analytics.
+
             if (
               typeof models[model].total_requests === "undefined" ||
               typeof models[model].total_tokens === "undefined"
@@ -85,7 +76,6 @@
               continue;
             }
 
-            // Find max Avg TPS for bar scaling
             let maxAvgTps = 0;
             for (let m in models) {
             const v = parseFloat(models[m]?.avg_tps);
@@ -93,18 +83,19 @@
             }
             if (maxAvgTps <= 0) maxAvgTps = 1;
 
+            const modelName = escapeHtml(prettifyModelName(model));
             html += "<tr>";
-            html += `<td>${escapeHtml(prettifyModelName(model))}</td>`;
-            html += `<td>${models[model].total_requests.toLocaleString()}</td>`;
-            html += `<td>${models[model].avg_response_time}</td>`;
-            html += `<td>${models[model].min_tps}</td>`;
-            html += `<td>${models[model].max_tps}</td>`;
+            html += `<td class="analytics-model-cell" title="${modelName}"><span class="analytics-model-name">${modelName}</span></td>`;
+            html += `<td class="analytics-number">${models[model].total_requests.toLocaleString()}</td>`;
+            html += `<td class="analytics-number">${models[model].avg_response_time}</td>`;
+            html += `<td class="analytics-number">${models[model].min_tps}</td>`;
+            html += `<td class="analytics-number">${models[model].max_tps}</td>`;
             const avg = parseFloat(models[model].avg_tps) || 0;
             const pct = Math.max(2, Math.min(100, (avg / maxAvgTps) * 100));
             
-            html += `<td class="tpsval">${models[model].avg_tps}</td>`;
-            html += `<td data-sort="${avg.toFixed(6)}"><div class="tpsbar" title="Avg TPS: ${avg.toFixed(2)}"><i style="width:${pct}%;"></i></div></td>`;
-            html += `<td>${models[model].total_tokens.toLocaleString()}</td>`;
+            html += `<td class="analytics-number tpsval">${models[model].avg_tps}</td>`;
+            html += `<td class="analytics-tps-viz" data-sort="${avg.toFixed(6)}"><div class="tpsbar" title="Avg TPS: ${avg.toFixed(2)}" aria-label="Average ${avg.toFixed(2)} tokens per second" role="img"><i style="width:${pct}%;"></i></div></td>`;
+            html += `<td class="analytics-number">${models[model].total_tokens.toLocaleString()}</td>`;
             
             html += "</tr>";
   
@@ -112,13 +103,12 @@
             if (!isNaN(tokens)) overallTokens += tokens;
           }
   
-          html += `<tr><td colspan="7" style="text-align:right;"><strong>Total Tokens: </strong></td><td><strong> ${overallTokens.toLocaleString()}</strong></td></tr>`;
           html += "</tbody></table></div>";
+          html = html.replace(totalTokensPlaceholder, overallTokens.toLocaleString());
   
           const dash = document.getElementById("analyticsDashboard");
           if (dash) dash.innerHTML = html;
   
-          // Default sort (preserved)
           window.sortTable('analyticsTable', 4, true, true);
   
         })
@@ -142,9 +132,10 @@
       
         const headers = table.getElementsByTagName("th");
       
-        // Reset header labels (remove arrows)
         for (let i = 0; i < headers.length; i++) {
-          headers[i].innerHTML = headers[i].getAttribute("data-title");
+          headers[i].textContent = headers[i].getAttribute("data-title");
+          headers[i].setAttribute("aria-sort", "none");
+          headers[i].removeAttribute("data-sort-active");
         }
       
         const header = headers[colIndex];
@@ -156,24 +147,11 @@
         }
       
         header.setAttribute("data-sort-dir", sortDir);
-        const arrow = sortDir === "asc" ? " ▲" : " ▼";
-        header.innerHTML = header.getAttribute("data-title") + arrow;
+        header.setAttribute("data-sort-active", "true");
+        header.setAttribute("aria-sort", sortDir === "asc" ? "ascending" : "descending");
       
-        // Split normal rows vs "summary" rows (e.g., Total Tokens row)
         const allRows = Array.from(tbody.getElementsByTagName("tr"));
-        const dataRows = [];
-        const tailRows = [];
-      
-        for (const r of allRows) {
-          const tdCount = r.getElementsByTagName("td").length;
-          // Summary rows usually have fewer cells because of colspan,
-          // and/or contain <strong>Total Tokens:</strong>
-          const isSummary =
-            tdCount !== headers.length ||
-            (r.innerText && r.innerText.toLowerCase().includes("total tokens"));
-      
-          (isSummary ? tailRows : dataRows).push(r);
-        }
+        const dataRows = allRows;
       
         dataRows.sort((a, b) => {
           const aCells = a.getElementsByTagName("td");
@@ -183,7 +161,6 @@
           const aCell = aCells[colIndex];
           const bCell = bCells[colIndex];
       
-          // NEW: if data-sort exists, use it (perfect for TPS Viz)
           const aSort = aCell.getAttribute("data-sort");
           const bSort = bCell.getAttribute("data-sort");
           if (aSort !== null || bSort !== null) {
@@ -197,7 +174,6 @@
           let aText = (aCell.innerText || "").trim();
           let bText = (bCell.innerText || "").trim();
       
-          // Special case: Avg Time column (index 2)
           if (colIndex === 2) {
             const parseTimeToSeconds = (text) => {
               let total = 0;
@@ -213,7 +189,6 @@
             aText = parseFloat(aText.replace(/,/g, "")) || 0;
             bText = parseFloat(bText.replace(/,/g, "")) || 0;
           } else {
-            // Case-insensitive text compare for stability
             aText = aText.toLowerCase();
             bText = bText.toLowerCase();
           }
@@ -223,16 +198,12 @@
           return 0;
         });
       
-        // Rebuild tbody: sorted data rows + summary rows at the end
         dataRows.forEach(row => tbody.appendChild(row));
-        tailRows.forEach(row => tbody.appendChild(row));
       }
   
-    // Expose globals so existing onclick handlers and toggleDrawer keep working
     window.fetchAnalytics = fetchAnalytics;
     window.sortTable = sortTable;
   
-    // Optional export
     window.prettifyModelName = prettifyModelName;
   })();
   

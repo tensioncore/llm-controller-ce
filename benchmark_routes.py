@@ -1,4 +1,3 @@
-# benchmark_routes.py
 from flask import Blueprint, request, jsonify, session
 import os
 import time
@@ -18,9 +17,6 @@ import model_routes  # reuse llama-server launch helpers + constants
 
 benchmark_routes = Blueprint("benchmark_routes", __name__)
 
-# -------------------------------------------------------------------
-# Globals (single-run worker)
-# -------------------------------------------------------------------
 _bench_lock = threading.Lock()
 
 # Cancel flag. Threads cannot be killed safely; use a cooperative stop.
@@ -49,9 +45,6 @@ CE_BENCHMARK_PROMPTSET_VERSION = "v1"
 CE_BENCHMARK_PROMPT_LIMIT = 5
 CE_PROMPTS_INVALIDATED_FAIL_REASON = "ce_prompts_updated"
 
-# -------------------------------------------------------------------
-# DB helpers (DO NOT use flask.g in background threads)
-# -------------------------------------------------------------------
 def _emit_to_user(user_id, event, payload):
     # Your chat system already uses user_{user_id} rooms.
     # NOTE: The UI may not always be joined to this room (esp. after refresh),
@@ -104,9 +97,6 @@ def _basename_key(s: str) -> str:
     parts = [p for p in s.split("/") if p]
     return parts[-1] if parts else s
 
-# -------------------------------------------------------------------
-# Load the seeded CE prompt set
-# -------------------------------------------------------------------
 def get_ce_prompt_bundle():
     prompt_set = get_prompt_set(CE_BENCHMARK_PROMPTSET_NAME, CE_BENCHMARK_PROMPTSET_VERSION)
     if not prompt_set:
@@ -145,24 +135,18 @@ def _coerce_profile_setting(settings, key, cast, minimum=None, maximum=None, alt
         raise RuntimeError(f"Benchmark profile has invalid setting: {key}")
     return parsed
 
-# -------------------------------------------------------------------
-# Clear results for specific model
-# IMPORTANT:
 # Reset ALWAYS clears ALL benchmark runs for a model.
 # There is intentionally NO failed-only mode.
-# -------------------------------------------------------------------
 @benchmark_routes.route("/reset_model", methods=["POST"])
 @login_required(role="admin")
 def bench_reset_model():
     data = request.get_json() or {}
     fingerprint = (data.get("fingerprint") or "").strip().lower()
 
-    # Don't allow reset while benchmarking is running
     with _bench_lock:
         if _bench_state.get("running"):
             return jsonify({"status": "error", "message": "Benchmarks are running. Stop them first."}), 400
 
-    # STRICT: 40-char hex only (per your spec)
     if not fingerprint or len(fingerprint) != 40:
         return jsonify({"status": "error", "message": "Invalid fingerprint length (must be 40 hex chars)."}), 400
     try:
@@ -173,7 +157,6 @@ def bench_reset_model():
     db = mysql_conn()
     cur = db.cursor(dictionary=True)
     try:
-        # Resolve model by fingerprint
         cur.execute("SELECT id FROM llm_benchmark_models WHERE fingerprint=%s LIMIT 1", (fingerprint,))
         row = cur.fetchone()
         if not row or not row.get("id"):
@@ -207,9 +190,6 @@ def bench_reset_model():
             pass
 
 
-# -------------------------------------------------------------------
-# Model + run DB helpers
-# -------------------------------------------------------------------
 def _get_registry_models_for_bench(include_disabled: bool = False):
     """
     Pull models ONLY from the registry table.
@@ -402,10 +382,7 @@ def insert_result(run_id, prompt_id, success, response_text, metrics, error=None
         except Exception:
             pass
 
-# -------------------------------------------------------------------
-# llama-server orchestration (reuse model_routes)
 # We intentionally FORCE stop any running main/title model before starting.
-# -------------------------------------------------------------------
 def stop_any_running_models():
     try:
         model_routes._stop_main_model_runtime(clear_logs=True)
@@ -557,15 +534,11 @@ def call_completion(prompt_text, max_tokens, timeout_sec):
     }
     return text.strip(), metrics
 
-# -------------------------------------------------------------------
-# Worker
-# -------------------------------------------------------------------
 def _set_state(**kwargs):
     for k, v in kwargs.items():
         _bench_state[k] = v
 
 def _log_state_tick():
-    # Compact CMD line so you can watch it run without spamming too hard
     try:
         s = dict(_bench_state)
         print(
@@ -609,7 +582,6 @@ def _cancel_and_exit(admin_user_id, run_id=None, model_path=None, where=""):
     return
 
 def benchmark_worker(admin_user_id, profile_name, promptset_name, promptset_version, force=False):
-    # Ensure clean cancel flag for a new worker start.
     _bench_cancel.clear()
 
     with _bench_lock:
@@ -713,7 +685,6 @@ def benchmark_worker(admin_user_id, profile_name, promptset_name, promptset_vers
                 _emit_to_user(admin_user_id, "benchmark_progress", dict(_bench_state))
                 continue
 
-            # model_id already came from registry query
             model_id = int(m.get("id") or 0)
             if model_id <= 0:
                 with _bench_lock:
@@ -901,9 +872,6 @@ def benchmark_worker(admin_user_id, profile_name, promptset_name, promptset_vers
         except Exception:
             pass
 
-# -------------------------------------------------------------------
-# Routes
-# -------------------------------------------------------------------
 @benchmark_routes.route("/status", methods=["GET"])
 @login_required(role="admin")
 def bench_status():
@@ -1145,7 +1113,6 @@ def bench_best():
         )
         rows = cur.fetchall() or []
 
-        # Present-on-disk detection.
         def _norm(s: str) -> str:
             if s is None:
                 return ""

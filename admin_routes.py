@@ -1,4 +1,3 @@
-# admin_routes.py
 import re
 import sqlite3
 
@@ -65,7 +64,6 @@ def admin_users():
     )
     users = cursor.fetchall()
 
-    # DB-backed password policy.
     settings = get_password_settings()
 
     return render_template('admin_users.html', users=users, settings=settings)
@@ -120,7 +118,6 @@ def add_user():
         flash("Only the user role is available in this release.", "error")
         return redirect(url_for('admin.admin_users'))
 
-    # Generate password meeting current policy (DB-backed)
     settings = get_password_settings()
     temp_pw = generate_temp_password(settings)
     pw_hash = generate_password_hash(temp_pw).decode('utf-8')
