@@ -4,6 +4,7 @@ import requests
 import uuid
 import time
 import datetime
+import math
 import re
 import threading
 import secrets
@@ -131,8 +132,127 @@ def init_db():
     c.execute('CREATE INDEX IF NOT EXISTS idx_chats_user_session_time ON chats(user_id, session_id, timestamp)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_chats_user_session_active ON chats(user_id, session_id, active_in_chat, id)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_chats_turn_variant ON chats(user_id, session_id, turn_id, prompt_version, response_version)')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS request_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp INTEGER NOT NULL,
+            user_id INTEGER DEFAULT NULL,
+            source TEXT NOT NULL,
+            endpoint TEXT NOT NULL,
+            requested_model TEXT DEFAULT NULL,
+            active_model TEXT DEFAULT NULL,
+            status TEXT NOT NULL,
+            http_status INTEGER DEFAULT NULL,
+            duration REAL DEFAULT NULL,
+            streaming INTEGER NOT NULL DEFAULT 0,
+            prompt_tokens INTEGER DEFAULT NULL,
+            completion_tokens INTEGER DEFAULT NULL,
+            total_tokens INTEGER DEFAULT NULL
+        )
+    ''')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_request_events_time ON request_events(timestamp DESC, id DESC)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_request_events_source_time ON request_events(source, timestamp DESC, id DESC)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_request_events_user_time ON request_events(user_id, timestamp DESC, id DESC)')
     conn.commit()
     conn.close()
+
+
+def _request_event_text(value, max_length=255):
+    if value is None:
+        return None
+    cleaned = "".join(ch for ch in str(value).strip() if ch >= " " and ch != "\x7f")
+    return cleaned[:max_length] or None
+
+
+def _request_event_integer(value, minimum=None):
+    if value is None or value == "":
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    if minimum is not None and parsed < minimum:
+        return None
+    return parsed
+
+
+def _request_event_float(value, minimum=None):
+    if value is None or value == "":
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(parsed):
+        return None
+    if minimum is not None and parsed < minimum:
+        return None
+    return parsed
+
+
+def record_request_event(
+    *,
+    source,
+    endpoint,
+    status,
+    user_id=None,
+    requested_model=None,
+    active_model=None,
+    http_status=None,
+    duration=None,
+    streaming=False,
+    prompt_tokens=None,
+    completion_tokens=None,
+    total_tokens=None,
+    timestamp=None,
+):
+    """Best-effort persistence for request metadata only.
+
+    Callers intentionally cannot supply prompt, response, image, credential, or
+    authorization content through this contract.
+    """
+    source_value = _request_event_text(source, 32)
+    endpoint_value = _request_event_text(endpoint, 255)
+    status_value = _request_event_text(status, 64)
+    if not source_value or not endpoint_value or not status_value:
+        return False
+
+    timestamp_value = _request_event_integer(timestamp)
+    if timestamp_value is None:
+        timestamp_value = int(time.time())
+
+    values = (
+        timestamp_value,
+        _request_event_integer(user_id, minimum=1),
+        source_value,
+        endpoint_value,
+        _request_event_text(requested_model, 255),
+        _request_event_text(active_model, 255),
+        status_value,
+        _request_event_integer(http_status, minimum=100),
+        _request_event_float(duration, minimum=0),
+        1 if streaming else 0,
+        _request_event_integer(prompt_tokens, minimum=0),
+        _request_event_integer(completion_tokens, minimum=0),
+        _request_event_integer(total_tokens, minimum=0),
+    )
+
+    try:
+        with sqlite3.connect(DB_PATH, timeout=2) as conn:
+            conn.execute(
+                """
+                INSERT INTO request_events (
+                    timestamp, user_id, source, endpoint,
+                    requested_model, active_model, status, http_status,
+                    duration, streaming, prompt_tokens, completion_tokens,
+                    total_tokens
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                values,
+            )
+        return True
+    except Exception:
+        return False
 
 def find_models(base_folder):
     models = []
@@ -181,4 +301,3 @@ def find_models(base_folder):
 
     models.sort(key=lambda model: (str(model.get("name") or "").lower(), str(model.get("value") or "").lower()))
     return models
-

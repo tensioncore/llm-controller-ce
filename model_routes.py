@@ -12,8 +12,7 @@ import datetime as dt
 import re
 
 from helpers import DB_PATH
-from app_settings import get_setting
-from bootstrap_config import WILDCARD_BIND_HOSTS, get_app_bind
+from app_settings import get_setting, set_setting
 from db_mysql import mysql_conn
 from runtime_config import (
     get_llama_main_port,
@@ -27,6 +26,8 @@ model_routes = Blueprint('model_routes', __name__)
 
 main_process = None
 title_process = None
+title_ready_process = None
+title_runtime_failure_model = ""
 main_log_buffer = []
 title_log_buffer = []
 current_main_model_used = ""
@@ -54,11 +55,15 @@ MODEL_LOAD_FAILURE_PATTERNS = GPU_OOM_LOG_PATTERNS + (
     "exiting due to model loading error",
     "model loading error",
 )
-DEFAULT_TITLE_MODEL_MATCH_NAME = "deepseek-r1-distill-qwen-1.5b-q4_k_m.gguf"
-DEFAULT_TITLE_MODEL_CANDIDATES = (
-    ("lmstudio-community", DEFAULT_TITLE_MODEL_MATCH_NAME),
-    (DEFAULT_TITLE_MODEL_MATCH_NAME,),
-    ("lmstudio-community", "DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf"),
+TITLE_MODEL_SETTING_KEY = "llm.title_model_path"
+MODEL_PROFILE_FIELDS = (
+    "profile_general",
+    "profile_coding",
+    "profile_writing",
+    "profile_reasoning",
+    "profile_math",
+    "profile_agents",
+    "profile_images",
 )
 
 
@@ -74,27 +79,6 @@ def resolve_model_path(model_path: str) -> str:
         return os.path.normpath(path)
     return os.path.normpath(os.path.join(get_base_model_folder(), path))
 
-
-def _get_default_title_model_candidates():
-    base = get_base_model_folder()
-    return [os.path.join(base, *parts) for parts in DEFAULT_TITLE_MODEL_CANDIDATES]
-
-
-def get_default_title_model_path() -> str:
-    base = get_base_model_folder()
-    candidates = _get_default_title_model_candidates()
-
-    for candidate in candidates:
-        if os.path.isfile(candidate):
-            return os.path.normpath(candidate)
-
-    for root, _, files in os.walk(base):
-        for filename in files:
-            name = filename.lower()
-            if name == DEFAULT_TITLE_MODEL_MATCH_NAME:
-                return os.path.normpath(os.path.join(root, filename))
-
-    return os.path.normpath(candidates[0])
 
 def get_llama_main_completion_url() -> str:
     return f"http://127.0.0.1:{get_llama_main_port()}/v1/chat/completions"
@@ -171,14 +155,6 @@ def _get_dual_gpu_split_threshold():
         return _get_db_default_int("llama.dual_gpu_split_threshold_gb", minimum=0)
     except Exception as e:
         raise RuntimeError("Unable to load required setting: llama.dual_gpu_split_threshold_gb") from e
-
-
-def _get_controller_base_url() -> str:
-    host, port = get_app_bind()
-    normalized_host = str(host or "").strip() or "127.0.0.1"
-    if normalized_host in WILDCARD_BIND_HOSTS:
-        normalized_host = "127.0.0.1"
-    return f"http://{normalized_host}:{int(port)}"
 
 
 def _sha1(s: str) -> str:
@@ -290,6 +266,19 @@ def _get_user_facing_model_name(path_or_name: str) -> str:
 
     noext = os.path.splitext(base)[0]
     return noext or base
+
+
+def _get_model_title(path_or_name: str, friendly_name=None) -> str:
+    friendly = str(friendly_name or "").strip()
+    if friendly:
+        return friendly
+
+    base = os.path.basename(str(path_or_name or "").strip())
+    if not base:
+        return "Unknown"
+    if base.lower().endswith(".gguf"):
+        base = base[:-5]
+    return base or "Unknown"
 
 
 def _detect_model_load_failure(log_buffer):
@@ -544,6 +533,8 @@ def registry_rescan():
     cur.close()
     conn.close()
 
+    _get_title_model_selection(clear_invalid=True)
+
     return {"scanned": len(scan_rows), "seen": len(seen_set)}
 
 
@@ -553,13 +544,16 @@ def registry_list(include_disabled=True):
 
     where = ""
     if not include_disabled:
-        where = "WHERE is_enabled=1"
+        where = "WHERE is_enabled=1 AND is_projector=0"
 
     sql = f"""
         SELECT
-            id, fingerprint, model_name, model_path, file_size, mtime,
+            id, fingerprint, model_name, friendly_name, model_path, file_size, mtime,
             first_seen_at, last_seen_at,
-            is_enabled, is_favorite, allow_benchmark, is_present, notes
+            is_enabled, is_favorite, allow_benchmark, is_projector, is_present,
+            notes, profile_general, profile_coding, profile_writing,
+            profile_reasoning, profile_math, profile_agents, profile_images,
+            mmproj_path
         FROM llm_benchmark_models
         {where}
         ORDER BY is_favorite DESC, is_enabled DESC, model_name ASC
@@ -569,6 +563,288 @@ def registry_list(include_disabled=True):
     cur.close()
     conn.close()
     return rows
+
+
+def _registry_path_key(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        resolved = resolve_model_path(raw)
+    except Exception:
+        resolved = raw
+    return os.path.normcase(os.path.realpath(os.path.abspath(resolved)))
+
+
+def _find_registry_model_by_path(model_path, enabled_present_only=False):
+    target_key = _registry_path_key(model_path)
+    if not target_key:
+        return None
+
+    conn = mysql_conn()
+    cur = conn.cursor(dictionary=True)
+    try:
+        where = "WHERE is_enabled=1 AND is_present=1 AND is_projector=0" if enabled_present_only else ""
+        cur.execute(f"""
+            SELECT
+                id, fingerprint, model_name, friendly_name, model_path, file_size, mtime,
+                is_enabled, is_favorite, allow_benchmark, is_projector, is_present,
+                notes, profile_general, profile_coding, profile_writing,
+                profile_reasoning, profile_math, profile_agents, profile_images,
+                mmproj_path
+            FROM llm_benchmark_models
+            {where}
+        """)
+        for row in cur.fetchall() or []:
+            if _registry_path_key(row.get("model_path")) == target_key:
+                return row
+        return None
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _normalize_mmproj_path_for_storage(value):
+    raw = str(value or "")
+    if "\x00" in raw:
+        raise ValueError("Projector path contains an invalid character.")
+    raw = raw.strip()
+    if not raw:
+        return ""
+    if "\r" in raw or "\n" in raw:
+        raise ValueError("Projector path must be a single line.")
+    if len(raw) > 1024:
+        raise ValueError("Projector path must be 1024 characters or fewer.")
+
+    base_path = os.path.realpath(os.path.abspath(get_base_model_folder()))
+    candidate = raw if os.path.isabs(raw) else os.path.join(base_path, raw.replace("/", os.sep).replace("\\", os.sep))
+    candidate_path = os.path.realpath(os.path.abspath(candidate))
+    try:
+        inside_scan_directory = os.path.commonpath(
+            [os.path.normcase(base_path), os.path.normcase(candidate_path)]
+        ) == os.path.normcase(base_path)
+    except ValueError:
+        inside_scan_directory = False
+    if not inside_scan_directory:
+        raise ValueError("Projector file must be inside the configured model scan directory.")
+    if not os.path.isfile(candidate_path):
+        raise ValueError("Projector file was not found.")
+
+    stored = os.path.relpath(candidate_path, base_path).replace("\\", "/")
+    if len(stored) > 1024:
+        raise ValueError("Stored projector path must be 1024 characters or fewer.")
+    return stored
+
+
+def _resolve_configured_mmproj_path(value):
+    stored = _normalize_mmproj_path_for_storage(value)
+    return resolve_model_path(stored) if stored else ""
+
+
+def _clear_title_model_selection():
+    try:
+        set_setting(TITLE_MODEL_SETTING_KEY, "", "string")
+    except Exception as exc:
+        print(f"[WARN] Could not clear invalid title-model selection: {exc}")
+
+
+def _get_title_model_selection(clear_invalid=True):
+    try:
+        configured_path = str(get_setting(TITLE_MODEL_SETTING_KEY, default="") or "").strip()
+    except Exception:
+        return None
+    if not configured_path:
+        return None
+
+    try:
+        row = _find_registry_model_by_path(configured_path, enabled_present_only=True)
+    except Exception:
+        return None
+    if row:
+        resolved_path = resolve_model_path(row.get("model_path"))
+        if os.path.isfile(resolved_path):
+            row["resolved_path"] = os.path.normpath(resolved_path)
+            return row
+
+    if clear_invalid:
+        _clear_title_model_selection()
+    return None
+
+
+def get_title_generation_completion_urls():
+    urls = []
+    selected = _get_title_model_selection(clear_invalid=True)
+    if selected and _is_title_model_ready():
+        selected_key = _registry_path_key(selected.get("resolved_path"))
+        running_key = _registry_path_key(current_title_model_used)
+        if selected_key and selected_key == running_key:
+            urls.append(get_llama_title_completion_url())
+
+    main_url = get_llama_main_completion_url()
+    if main_url not in urls:
+        urls.append(main_url)
+    return urls
+
+
+def _title_generation_status():
+    selected = _get_title_model_selection(clear_invalid=True)
+    title_running = bool(title_process and title_process.poll() is None)
+    selected_key = _registry_path_key(selected.get("resolved_path")) if selected else ""
+    running_key = _registry_path_key(current_title_model_used)
+    selected_runtime_alive = bool(
+        selected
+        and title_running
+        and selected_key == running_key
+    )
+    dedicated_running = bool(selected_runtime_alive and _is_title_model_ready())
+    dedicated_failed = bool(
+        selected_key
+        and not selected_runtime_alive
+        and (
+            selected_key == _registry_path_key(title_runtime_failure_model)
+            or (
+                title_process is not None
+                and title_process.poll() is not None
+                and selected_key == running_key
+            )
+        )
+    )
+    return {
+        "selected_model": selected.get("model_name") if selected else None,
+        "selected_model_path": selected.get("model_path") if selected else "",
+        "mode": "dedicated" if dedicated_running else "main_model",
+        "dedicated_runtime": (
+            "running" if dedicated_running else (
+                "starting" if selected_runtime_alive else ("failed" if dedicated_failed else "stopped")
+            )
+        ),
+        "fallback_active": not dedicated_running,
+    }
+
+
+def _basename_tps_key(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    base = raw.replace("\\", "/").rsplit("/", 1)[-1].strip()
+    split_meta = _parse_split_gguf_filename(base)
+    if split_meta:
+        return split_meta["base_name"].lower()
+    if base.lower().endswith(".gguf"):
+        base = base[:-5]
+    return base.lower()
+
+
+def _chat_tps_path_key(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    return os.path.normpath(raw).replace("\\", "/").lower()
+
+
+def _chat_tps_name_key(value):
+    return str(value or "").strip().lower()
+
+
+def _looks_like_model_path(value):
+    raw = str(value or "").strip()
+    return bool(raw and ("/" in raw or "\\" in raw or raw.lower().endswith(".gguf")))
+
+
+def _remember_chat_max_tps(bucket, keys, tps_value):
+    for key in keys:
+        if not key:
+            continue
+        previous = bucket.get(key)
+        if previous is None or tps_value > previous:
+            bucket[key] = tps_value
+
+
+def _load_chat_max_tps_maps():
+    maps = {"path": {}, "name": {}, "basename": {}}
+    connection = None
+    try:
+        connection = sqlite3.connect(DB_PATH)
+        cursor = connection.cursor()
+        cursor.execute("""
+            SELECT model_used, MAX(tps) AS max_tps
+            FROM chats
+            WHERE model_used IS NOT NULL AND model_used != ''
+            GROUP BY model_used
+        """)
+        for model_used, max_tps in cursor.fetchall() or []:
+            try:
+                tps_value = float(max_tps) if max_tps is not None else None
+            except Exception:
+                tps_value = None
+            if tps_value is None:
+                continue
+
+            raw = str(model_used or "").strip()
+            if not raw:
+                continue
+            if _looks_like_model_path(raw):
+                path_keys = [_chat_tps_path_key(raw)]
+                if not os.path.isabs(raw):
+                    try:
+                        path_keys.append(_chat_tps_path_key(resolve_model_path(raw)))
+                    except Exception:
+                        pass
+                _remember_chat_max_tps(maps["path"], path_keys, tps_value)
+            else:
+                _remember_chat_max_tps(maps["name"], [_chat_tps_name_key(raw)], tps_value)
+            _remember_chat_max_tps(maps["basename"], [_basename_tps_key(raw)], tps_value)
+    except Exception:
+        pass
+    finally:
+        if connection is not None:
+            try:
+                connection.close()
+            except Exception:
+                pass
+    return maps
+
+
+def _lookup_chat_max_tps(name, path, maps):
+    seen = set()
+    candidates = [path]
+    if path:
+        try:
+            candidates.append(resolve_model_path(path))
+        except Exception:
+            pass
+    for candidate in candidates:
+        key = _chat_tps_path_key(candidate)
+        if key and key not in seen:
+            seen.add(key)
+            value = maps["path"].get(key)
+            if value is not None:
+                return value
+
+    path_basename_key = _basename_tps_key(path)
+    name_key = _chat_tps_name_key(name)
+    if name_key and (not path_basename_key or name_key == path_basename_key):
+        value = maps["name"].get(name_key)
+        if value is not None:
+            return value
+
+    basename_keys = []
+    if path_basename_key:
+        basename_keys.append(path_basename_key)
+    name_basename_key = _basename_tps_key(name)
+    if name_basename_key and (not path_basename_key or name_basename_key == path_basename_key):
+        basename_keys.append(name_basename_key)
+    for key in basename_keys:
+        value = maps["basename"].get(key)
+        if value is not None:
+            return value
+    return None
 
 def _infer_runtime_backend_from_executable_path(executable_path: str) -> str:
     path_text = str(executable_path or "").strip().lower()
@@ -767,7 +1043,7 @@ def launch_llama_instance(
     model_path, gpu_id, port, n_gpu_layers=360, n_threads=8,
     extra_flags=None, model_settings=None, only_one_gpu=False,
     ctx_size=8192, n_parallel=1, fit="on", cpu_only=False,
-    executable_path=None, runtime_capabilities=None
+    executable_path=None, runtime_capabilities=None, mmproj_path=None
 ):
     resolved_executable = os.path.normpath(executable_path) if executable_path else _resolve_llama_server_executable()
     capabilities = runtime_capabilities or get_inference_runtime_capabilities(resolved_executable)
@@ -776,6 +1052,7 @@ def launch_llama_instance(
         "--model", model_path,
         "--n-gpu-layers", str(n_gpu_layers),
         "--threads", str(n_threads),
+        "--host", "127.0.0.1",
         "--port", str(port),
         "--ctx-size", str(int(ctx_size)),
         "--parallel", str(int(n_parallel)),
@@ -788,6 +1065,12 @@ def launch_llama_instance(
 
     if extra_flags:
         command += extra_flags
+
+    if mmproj_path:
+        resolved_mmproj_path = os.path.normpath(mmproj_path)
+        if not os.path.isfile(resolved_mmproj_path):
+            raise FileNotFoundError(f"Projector file not found: {resolved_mmproj_path}")
+        command += ["--mmproj", resolved_mmproj_path]
 
     if model_settings:
         for flag, val in model_settings.items():
@@ -946,10 +1229,12 @@ def _reset_main_model_state():
 
 
 def _reset_title_model_state():
-    global current_title_model_used, current_title_model_settings
+    global current_title_model_used, current_title_model_settings, title_ready_process, title_runtime_failure_model
 
     current_title_model_used = ""
     current_title_model_settings = {}
+    title_ready_process = None
+    title_runtime_failure_model = ""
 
 
 def _stop_main_model_runtime(clear_logs=True):
@@ -970,6 +1255,94 @@ def _stop_title_model_runtime(clear_logs=True):
     if clear_logs:
         title_log_buffer.clear()
     _reset_title_model_state()
+
+
+def _is_title_model_ready():
+    return bool(
+        title_process
+        and title_process.poll() is None
+        and title_ready_process is title_process
+    )
+
+
+def _monitor_title_model_readiness(proc):
+    global title_ready_process, title_runtime_failure_model
+
+    ready, ready_error, _, _ = wait_for_llama_server_ready(
+        proc,
+        get_llama_title_port(),
+        timeout=90,
+        log_buffer=title_log_buffer,
+    )
+    if title_process is not proc:
+        return
+    if ready and proc.poll() is None:
+        title_ready_process = proc
+        return
+
+    print(
+        "Warning: Selected title model did not become ready: "
+        f"{ready_error or 'unknown startup failure'}"
+    )
+    failed_model_path = current_title_model_used
+    _stop_title_model_runtime(clear_logs=False)
+    title_runtime_failure_model = failed_model_path
+
+
+def _start_selected_title_model_runtime(selected_model, executable_path, gpu_count):
+    global title_process, current_title_model_used, current_title_model_settings
+
+    if not selected_model or int(gpu_count or 0) < 2:
+        _stop_title_model_runtime(clear_logs=True)
+        return False
+
+    model_path = os.path.normpath(selected_model.get("resolved_path") or resolve_model_path(selected_model.get("model_path")))
+    if not os.path.isfile(model_path):
+        _clear_title_model_selection()
+        return False
+
+    launch_plan = build_llama_launch_plan(
+        model_path,
+        360,
+        executable_path=executable_path,
+        allow_tensor_split=False,
+    )
+    capabilities = launch_plan["capabilities"]
+    _stop_title_model_runtime(clear_logs=True)
+    current_title_model_used = model_path
+    current_title_model_settings = {"temp": 0.4}
+
+    try:
+        title_process = launch_llama_instance(
+            model_path=model_path,
+            gpu_id=int(gpu_count) - 1,
+            port=get_llama_title_port(),
+            n_gpu_layers=int(launch_plan["n_gpu_layers"]),
+            n_threads=8,
+            model_settings=current_title_model_settings,
+            only_one_gpu=True,
+            cpu_only=bool(launch_plan["cpu_only"]),
+            executable_path=executable_path,
+            runtime_capabilities=capabilities,
+        )
+        threading.Thread(
+            target=stream_logs,
+            args=(title_process, title_log_buffer),
+            daemon=True,
+        ).start()
+        threading.Thread(
+            target=_monitor_title_model_readiness,
+            args=(title_process,),
+            daemon=True,
+        ).start()
+        print(
+            f"Started title model {_get_user_facing_model_name(model_path)} on GPU {int(gpu_count) - 1} "
+            f"/ port {get_llama_title_port()} {_describe_launch_plan(launch_plan, mode='title')}"
+        )
+        return True
+    except Exception:
+        _stop_title_model_runtime(clear_logs=True)
+        raise
 
 
 def _is_benchmark_running():
@@ -1000,12 +1373,15 @@ def start_model():
     global main_process, main_log_buffer, current_main_model_used, current_main_model_settings
     global current_main_model_runtime
     global title_process, title_log_buffer, current_title_model_used, current_title_model_settings
+    global title_runtime_failure_model
 
     if _is_benchmark_running():
         return _benchmark_model_control_block()
 
     data = request.get_json() or {}
     errors = {}
+    projector_path = ""
+    registry_model = None
 
     model_path = data.get('model_path', '').strip()
     if not model_path:
@@ -1018,6 +1394,20 @@ def start_model():
             errors['model_path'] = split_error
         elif not os.path.isfile(model_path):
             errors['model_path'] = f"Valid model_path required (got: {model_path})"
+
+    if model_path and "model_path" not in errors:
+        try:
+            registry_model = _find_registry_model_by_path(model_path, enabled_present_only=False)
+            if _as01((registry_model or {}).get("is_projector")):
+                errors["model_path"] = "MMPROJ files cannot be launched as models."
+            else:
+                configured_mmproj_path = (registry_model or {}).get("mmproj_path")
+                if configured_mmproj_path:
+                    projector_path = _resolve_configured_mmproj_path(configured_mmproj_path)
+        except ValueError as exc:
+            errors["mmproj_path"] = str(exc)
+        except Exception:
+            errors["mmproj_path"] = "Could not validate the configured projector file."
 
     try:
         n_gpu_layers = int(data.get('n_gpu_layers', _get_db_default_int("llm.defaults.n_gpu_layers", minimum=0, maximum=1000)))
@@ -1092,6 +1482,7 @@ def start_model():
     cpu_only = bool(launch_plan["cpu_only"])
     effective_n_gpu_layers = int(launch_plan["n_gpu_layers"])
 
+    _stop_title_model_runtime(clear_logs=True)
     _stop_main_model_runtime(clear_logs=True)
     current_main_model_used = model_path
     current_main_model_settings = {
@@ -1119,6 +1510,7 @@ def start_model():
             cpu_only=cpu_only,
             executable_path=exe_path,
             runtime_capabilities=capabilities,
+            mmproj_path=projector_path or None,
         )
     except Exception as e:
         _reset_main_model_state()
@@ -1154,53 +1546,25 @@ def start_model():
         n_threads,
         cpu_only,
     )
+    current_main_model_runtime["supports_images"] = bool(projector_path)
+    current_main_model_runtime["projector_configured"] = bool(projector_path)
+    current_main_model_runtime["mmproj_filename"] = os.path.basename(projector_path) if projector_path else ""
+    current_main_model_runtime["display_name"] = _get_model_title(
+        (registry_model or {}).get("model_name") or current_main_model_used,
+        (registry_model or {}).get("friendly_name"),
+    )
 
-    if gpu_count >= 2:
-        title_model_path = get_default_title_model_path()
-        if os.path.isfile(title_model_path):
-            try:
-                _stop_title_model_runtime(clear_logs=True)
-                title_launch_plan = build_llama_launch_plan(
-                    title_model_path,
-                    360,
-                    executable_path=exe_path,
-                    allow_tensor_split=False,
-                )
-                title_capabilities = title_launch_plan["capabilities"]
-                current_title_model_used = title_model_path
-                current_title_model_settings = {"temp": 0.4}
-
-                title_process = launch_llama_instance(
-                    model_path=title_model_path,
-                    gpu_id=(gpu_count - 1) if gpu_count >= 2 else 0,
-                    port=get_llama_title_port(),
-                    n_gpu_layers=int(title_launch_plan["n_gpu_layers"]),
-                    n_threads=8,
-                    model_settings=current_title_model_settings,
-                    only_one_gpu=bool(title_launch_plan["only_one_gpu"]),
-                    cpu_only=bool(title_launch_plan["cpu_only"]),
-                    executable_path=exe_path,
-                    runtime_capabilities=title_capabilities,
-                )
-
-                threading.Thread(
-                    target=stream_logs,
-                    args=(title_process, title_log_buffer),
-                    daemon=True
-                ).start()
-
-                print(
-                    f"Started/restarted title model on GPU {(gpu_count - 1) if gpu_count >= 2 else 0} / port {get_llama_title_port()} "
-                    f"{_describe_launch_plan(title_launch_plan, mode='title')}"
-                )
-            except Exception as e:
-                _stop_title_model_runtime(clear_logs=True)
-                print(f"Warning: Could not start title model: {e}")
-        else:
-            print("Warning: Title model file not found at", title_model_path)
-    else:
-        if title_process and title_process.poll() is None:
+    selected_title_model = _get_title_model_selection(clear_invalid=True)
+    if gpu_count >= 2 and only_one_gpu and selected_title_model:
+        try:
+            _start_selected_title_model_runtime(selected_title_model, exe_path, gpu_count)
+        except Exception as exc:
+            failed_title_model_path = selected_title_model.get("resolved_path") or ""
             _stop_title_model_runtime(clear_logs=True)
+            title_runtime_failure_model = os.path.normpath(failed_title_model_path) if failed_title_model_path else ""
+            print(f"Warning: Could not start selected title model: {exc}")
+    else:
+        _stop_title_model_runtime(clear_logs=True)
 
     print(
         f"Model loaded: {_get_user_facing_model_name(current_main_model_used)} "
@@ -1239,32 +1603,33 @@ def stop_model():
 @login_required(roles=["admin", "user"])
 def model_status():
     global main_process, current_main_model_runtime
+    title_generation = _title_generation_status()
     runtime_ready = bool(
         isinstance(current_main_model_runtime, dict)
         and current_main_model_runtime.get("runtime_mode")
     )
     if main_process and main_process.poll() is None and runtime_ready:
-        name = _get_user_facing_model_name(current_main_model_used)
+        name = str(current_main_model_runtime.get("display_name") or "").strip()
+        if not name:
+            name = _get_model_title(current_main_model_used)
         return jsonify({
             "status": "running",
             "current_model": name,
             "settings": current_main_model_settings,
             "runtime": current_main_model_runtime,
+            "title_generation": title_generation,
         })
-    return jsonify({"status": "stopped", "current_model": None})
+    return jsonify({
+        "status": "stopped",
+        "current_model": None,
+        "title_generation": title_generation,
+    })
 
 
 @model_routes.route('/logs', methods=['GET'])
 @login_required(roles=["admin", "user"])
 def logs():
     return jsonify({"logs": main_log_buffer})
-
-
-@model_routes.route('/get_logs', methods=['GET'])
-@login_required(roles=["admin", "user"])
-def get_logs():
-    global main_log_buffer
-    return jsonify({"logs": main_log_buffer[-100:]})
 
 
 @model_routes.route('/clear_logs', methods=['POST'])
@@ -1282,152 +1647,6 @@ def clear_logs():
             "title": cleared_title
         }
     })
-
-
-@model_routes.route('/start_title_model', methods=['POST'])
-@login_required(role="admin")
-def start_title_model():
-    global title_process, title_log_buffer, current_title_model_used, current_title_model_settings
-
-    if _is_benchmark_running():
-        return _benchmark_model_control_block()
-
-    data = request.get_json() or {}
-    errors = {}
-
-    model_path = data.get('model_path', '').strip()
-    if model_path and not os.path.isabs(model_path):
-        model_path = resolve_model_path(model_path)
-    if not model_path:
-        model_path = get_default_title_model_path()
-
-    if not os.path.isfile(model_path):
-        errors['model_path'] = f"Valid model_path required for title model (got: {model_path})"
-
-    try:
-        n_gpu_layers = int(data.get('n_gpu_layers', 360))
-        if not (0 <= n_gpu_layers <= 1000):
-            raise ValueError()
-    except Exception:
-        errors['n_gpu_layers'] = 'n_gpu_layers must be an integer 0–1000'
-
-    try:
-        n_threads = int(data.get('n_threads', 8))
-        if not (1 <= n_threads <= 256):
-            raise ValueError()
-    except Exception:
-        errors['n_threads'] = 'n_threads must be an integer 1–256'
-
-    try:
-        temperature = float(data.get('temperature', '0.4'))
-        if not (0.0 <= temperature <= 2.0):
-            raise ValueError()
-    except Exception:
-        errors['temperature'] = 'temperature must be a number 0.0–2.0'
-
-    if errors:
-        return jsonify({"status": "error", "errors": errors}), 400
-
-    try:
-        exe_path = _resolve_llama_server_executable()
-        launch_plan = build_llama_launch_plan(
-            model_path,
-            n_gpu_layers,
-            executable_path=exe_path,
-            allow_tensor_split=False,
-        )
-    except (FileNotFoundError, RuntimeError) as e:
-        _log_gpu_launch_decision(
-            get_gpu_backend_state(_get_configured_llama_server_path_or_none()),
-            False,
-            f"Blocked before title-model launch: {e}",
-        )
-        return jsonify({
-            "status": "error",
-            "message": str(e)
-        }), 500
-
-    capabilities = launch_plan["capabilities"]
-    gpu_count = int(launch_plan["gpu_count"])
-    gpu_id = (gpu_count - 1) if gpu_count >= 2 else 0
-    only_one_gpu = True
-    cpu_only = bool(launch_plan["cpu_only"])
-    effective_n_gpu_layers = int(launch_plan["n_gpu_layers"])
-
-    _stop_title_model_runtime(clear_logs=True)
-    current_title_model_used = model_path
-    current_title_model_settings = {"temp": temperature}
-
-    try:
-        title_process = launch_llama_instance(
-            model_path=model_path,
-            gpu_id=gpu_id,
-            port=get_llama_title_port(),
-            n_gpu_layers=effective_n_gpu_layers,
-            n_threads=n_threads,
-            model_settings=current_title_model_settings,
-            only_one_gpu=only_one_gpu,
-            ctx_size=2048,
-            n_parallel=1,
-            fit="on",
-            cpu_only=cpu_only,
-            executable_path=exe_path,
-            runtime_capabilities=capabilities,
-        )
-
-        threading.Thread(
-            target=stream_logs,
-            args=(title_process, title_log_buffer),
-            daemon=True
-        ).start()
-
-    except FileNotFoundError:
-        _stop_title_model_runtime(clear_logs=True)
-        return jsonify({
-            "status": "error",
-            "message": f"Failed to start llama-server: {exe_path} not found"
-        }), 500
-    except Exception as e:
-        _stop_title_model_runtime(clear_logs=True)
-        return jsonify({"status": "error", "message": f"Could not start title model: {e}"}), 500
-
-    return jsonify({"status": "started"})
-
-
-@model_routes.route('/stop_title_model', methods=['POST'])
-@login_required(role="admin")
-def stop_title_model():
-    global title_process, title_log_buffer, current_title_model_used, current_title_model_settings
-
-    if _is_benchmark_running():
-        return _benchmark_model_control_block()
-
-    _stop_title_model_runtime(clear_logs=True)
-
-    return jsonify({"status": "stopped"})
-
-
-@model_routes.route('/title_model_status', methods=['GET'])
-@login_required(roles=["admin", "user"])
-def title_model_status():
-    global title_process
-    if title_process and title_process.poll() is None:
-        name = _get_user_facing_model_name(current_title_model_used)
-        return jsonify({"status": "running", "current_model": name, "settings": current_title_model_settings})
-    return jsonify({"status": "stopped", "current_model": None})
-
-
-@model_routes.route('/title_logs', methods=['GET'])
-@login_required(roles=["admin", "user"])
-def title_logs():
-    return jsonify({"logs": title_log_buffer})
-
-
-@model_routes.route('/get_title_logs', methods=['GET'])
-@login_required(roles=["admin", "user"])
-def get_title_logs():
-    global title_log_buffer
-    return jsonify({"logs": title_log_buffer[-100:]})
 
 
 GPU_MONITOR_TIMEOUT_SEC = 6
@@ -2288,17 +2507,32 @@ def registry_rescan_route():
 def registry_list_route():
     try:
         rows = registry_list(include_disabled=True) or []
+        tps_maps = _load_chat_max_tps_maps()
 
         for r in rows:
             try:
                 r["is_enabled"] = _as01(r.get("is_enabled"))
                 r["is_favorite"] = _as01(r.get("is_favorite"))
                 r["allow_benchmark"] = _as01(r.get("allow_benchmark"))
+                r["is_projector"] = _as01(r.get("is_projector"))
                 r["is_present"] = _as01(r.get("is_present"))
+                for field in MODEL_PROFILE_FIELDS:
+                    r[field] = _as01(r.get(field))
+                r["friendly_name"] = str(r.get("friendly_name") or "")
+                r["notes"] = str(r.get("notes") or "")
+                r["mmproj_path"] = str(r.get("mmproj_path") or "")
+                r["max_tps"] = _lookup_chat_max_tps(
+                    r.get("model_name"),
+                    r.get("model_path"),
+                    tps_maps,
+                )
             except Exception:
                 pass
 
-        return jsonify({"status": "success", "models": rows})
+        return jsonify({
+            "status": "success",
+            "models": rows,
+        })
     except Exception as e:
         return jsonify({"status": "error", "message": f"List failed: {e}"}), 500
 
@@ -2313,7 +2547,7 @@ def registry_toggle_route():
     field = (data.get("field") or "").strip()
     value = data.get("value")
 
-    allowed = {"is_enabled", "is_favorite", "allow_benchmark"}
+    allowed = {"is_enabled", "is_favorite", "allow_benchmark", "is_projector"}
     if field not in allowed:
         return jsonify({"status": "error", "message": "Invalid field"}), 400
 
@@ -2332,22 +2566,56 @@ def registry_toggle_route():
         conn = _mysql_conn()
         cur = conn.cursor()
 
+        guarded_enable = field in {"is_enabled", "allow_benchmark"} and value == 1
         if model_id is not None:
+            row_selector = "id=%s"
+            row_identifier = int(model_id)
+        else:
+            row_selector = "fingerprint=%s"
+            row_identifier = fingerprint
+
+        if field == "is_projector" and value == 1:
             cur.execute(
-                f"UPDATE llm_benchmark_models SET {field}=%s WHERE id=%s",
-                (value, int(model_id))
+                f"""
+                UPDATE llm_benchmark_models
+                   SET is_projector=1,
+                       is_enabled=0,
+                       allow_benchmark=0
+                 WHERE {row_selector}
+                """,
+                (row_identifier,),
+            )
+        elif guarded_enable:
+            cur.execute(
+                f"UPDATE llm_benchmark_models SET {field}=1 WHERE {row_selector} AND is_projector=0",
+                (row_identifier,),
             )
         else:
             cur.execute(
-                f"UPDATE llm_benchmark_models SET {field}=%s WHERE fingerprint=%s",
-                (value, fingerprint)
+                f"UPDATE llm_benchmark_models SET {field}=%s WHERE {row_selector}",
+                (value, row_identifier),
             )
 
         if cur.rowcount < 1:
-            conn.rollback()
-            return jsonify({"status": "error", "message": "Model registry row not found"}), 404
+            cur.execute(
+                f"SELECT is_projector FROM llm_benchmark_models WHERE {row_selector} LIMIT 1",
+                (row_identifier,),
+            )
+            existing_row = cur.fetchone()
+            if existing_row is None:
+                conn.rollback()
+                return jsonify({"status": "error", "message": "Model registry row not found"}), 404
+            if guarded_enable and _as01(existing_row[0]):
+                conn.rollback()
+                return jsonify({
+                    "status": "error",
+                    "message": "MMPROJ files cannot be enabled or benchmark-enabled.",
+                }), 400
 
         conn.commit()
+
+        if (field == "is_enabled" and value == 0) or (field == "is_projector" and value == 1):
+            _get_title_model_selection(clear_invalid=True)
 
         return jsonify({"status": "success", "field": field, "value": value})
     except Exception as e:
@@ -2370,21 +2638,190 @@ def registry_toggle_route():
                 pass
 
 
+@model_routes.route('/registry/metadata', methods=['POST'])
+@login_required(role="admin")
+def registry_metadata_route():
+    global current_main_model_runtime
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"status": "error", "message": "A JSON object is required."}), 400
+
+    model_id = data.get("id")
+    fingerprint = str(data.get("fingerprint") or "").strip()
+    if model_id is None and not fingerprint:
+        return jsonify({"status": "error", "message": "id or fingerprint required"}), 400
+    if model_id is not None:
+        try:
+            model_id = int(model_id)
+        except Exception:
+            return jsonify({"status": "error", "message": "Invalid model id."}), 400
+
+    missing_fields = [field for field in MODEL_PROFILE_FIELDS if field not in data]
+    if "friendly_name" not in data:
+        missing_fields.append("friendly_name")
+    if "notes" not in data:
+        missing_fields.append("notes")
+    if "mmproj_path" not in data:
+        missing_fields.append("mmproj_path")
+    if missing_fields:
+        return jsonify({
+            "status": "error",
+            "message": f"Missing metadata fields: {', '.join(missing_fields)}",
+        }), 400
+
+    profile_values = {}
+    for field in MODEL_PROFILE_FIELDS:
+        value = data.get(field)
+        if not isinstance(value, bool):
+            return jsonify({
+                "status": "error",
+                "message": f"{field} must be true or false.",
+            }), 400
+        profile_values[field] = 1 if value else 0
+
+    friendly_name_value = data.get("friendly_name")
+    if not isinstance(friendly_name_value, str):
+        return jsonify({"status": "error", "message": "Friendly Name must be text."}), 400
+    if "\x00" in friendly_name_value or "\r" in friendly_name_value or "\n" in friendly_name_value:
+        return jsonify({"status": "error", "message": "Friendly Name must be a single line."}), 400
+    friendly_name_value = friendly_name_value.strip()
+    if len(friendly_name_value) > 255:
+        return jsonify({"status": "error", "message": "Friendly Name must be 255 characters or fewer."}), 400
+
+    notes_value = data.get("notes")
+    if not isinstance(notes_value, str):
+        return jsonify({"status": "error", "message": "Notes must be text."}), 400
+    if "\x00" in notes_value or "\r" in notes_value or "\n" in notes_value:
+        return jsonify({"status": "error", "message": "Notes must be a single line."}), 400
+    notes_value = notes_value.strip()
+    if len(notes_value) > 512:
+        return jsonify({"status": "error", "message": "Notes must be 512 characters or fewer."}), 400
+
+    mmproj_value = data.get("mmproj_path")
+    if not isinstance(mmproj_value, str):
+        return jsonify({"status": "error", "message": "Projector path must be text."}), 400
+    try:
+        mmproj_value = _normalize_mmproj_path_for_storage(mmproj_value)
+    except ValueError as exc:
+        return jsonify({"status": "error", "message": str(exc)}), 400
+
+    conn = None
+    cur = None
+    try:
+        conn = _mysql_conn()
+        cur = conn.cursor()
+        params = (
+            friendly_name_value or None,
+            notes_value or None,
+            profile_values["profile_general"],
+            profile_values["profile_coding"],
+            profile_values["profile_writing"],
+            profile_values["profile_reasoning"],
+            profile_values["profile_math"],
+            profile_values["profile_agents"],
+            profile_values["profile_images"],
+            mmproj_value or None,
+        )
+        if model_id is not None:
+            cur.execute("""
+                UPDATE llm_benchmark_models
+                SET friendly_name=%s,
+                    notes=%s,
+                    profile_general=%s,
+                    profile_coding=%s,
+                    profile_writing=%s,
+                    profile_reasoning=%s,
+                    profile_math=%s,
+                    profile_agents=%s,
+                    profile_images=%s,
+                    mmproj_path=%s
+                WHERE id=%s
+            """, params + (model_id,))
+        else:
+            cur.execute("""
+                UPDATE llm_benchmark_models
+                SET friendly_name=%s,
+                    notes=%s,
+                    profile_general=%s,
+                    profile_coding=%s,
+                    profile_writing=%s,
+                    profile_reasoning=%s,
+                    profile_math=%s,
+                    profile_agents=%s,
+                    profile_images=%s,
+                    mmproj_path=%s
+                WHERE fingerprint=%s
+            """, params + (fingerprint,))
+
+        if model_id is not None:
+            cur.execute("SELECT model_name, model_path FROM llm_benchmark_models WHERE id=%s LIMIT 1", (model_id,))
+        else:
+            cur.execute(
+                "SELECT model_name, model_path FROM llm_benchmark_models WHERE fingerprint=%s LIMIT 1",
+                (fingerprint,),
+            )
+        updated_row = cur.fetchone()
+        if updated_row is None:
+            conn.rollback()
+            return jsonify({"status": "error", "message": "Model registry row not found"}), 404
+
+        updated_model_name = updated_row[0]
+        updated_model_path = updated_row[1]
+        conn.commit()
+        if (
+            isinstance(current_main_model_runtime, dict)
+            and _registry_path_key(updated_model_path) == _registry_path_key(current_main_model_used)
+        ):
+            current_main_model_runtime["display_name"] = _get_model_title(
+                updated_model_name or updated_model_path,
+                friendly_name_value,
+            )
+        return jsonify({
+            "status": "success",
+            "metadata": {
+                "friendly_name": friendly_name_value,
+                "notes": notes_value,
+                **{field: bool(profile_values[field]) for field in MODEL_PROFILE_FIELDS},
+                "mmproj_path": mmproj_value,
+            },
+        })
+    except Exception as exc:
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        return jsonify({"status": "error", "message": f"Metadata update failed: {exc}"}), 500
+    finally:
+        if cur is not None:
+            try:
+                cur.close()
+            except Exception:
+                pass
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
 @model_routes.route('/registry/dropdown', methods=['GET'])
 @login_required(roles=["admin", "user"])
 def registry_dropdown_route():
     try:
         def load_dropdown_rows():
-            # Use a dedicated connection here so the fresh-install auto-seed path
-            # can't accidentally reuse a request-scoped handle that was already closed.
             conn = mysql_conn()
             cur = conn.cursor(dictionary=True)
             try:
                 cur.execute("""
                     SELECT
-                        id, model_name, model_path, file_size, is_favorite
+                        id, model_name, model_path, file_size, is_favorite,
+                        notes, profile_general, profile_coding, profile_writing,
+                        profile_reasoning, profile_math, profile_agents, profile_images,
+                        mmproj_path
                     FROM llm_benchmark_models
-                    WHERE is_enabled=1 AND is_present=1
+                    WHERE is_enabled=1 AND is_present=1 AND is_projector=0
                     ORDER BY is_favorite DESC, model_name ASC
                 """)
                 return cur.fetchall() or []
@@ -2415,120 +2852,11 @@ def registry_dropdown_route():
                 except Exception:
                     pass
 
-            # Fresh installs start with an empty registry until the first rescan.
-            # Seed it once here so the model dropdown does not look empty.
             if not registry_has_rows:
                 registry_rescan()
                 rows = load_dropdown_rows()
 
-        def basename_tps_key(s: str) -> str:
-            if not s:
-                return ""
-            s = str(s).strip()
-            base = s.replace("\\", "/").rsplit("/", 1)[-1].strip()
-            split_meta = _parse_split_gguf_filename(base)
-            if split_meta:
-                return split_meta["base_name"].lower()
-            if base.lower().endswith(".gguf"):
-                base = base[:-5]
-            return base.lower()
-
-        def norm_path_key(s: str) -> str:
-            raw = str(s or "").strip()
-            if not raw:
-                return ""
-            return os.path.normpath(raw).replace("\\", "/").lower()
-
-        def model_name_key(s: str) -> str:
-            return str(s or "").strip().lower()
-
-        def looks_like_model_path(s: str) -> bool:
-            raw = str(s or "").strip()
-            return bool(raw and ("/" in raw or "\\" in raw or raw.lower().endswith(".gguf")))
-
-        def registry_path_tps_keys(path: str):
-            keys = []
-            seen = set()
-            for candidate in (path, resolve_model_path(path) if path else ""):
-                key = norm_path_key(candidate)
-                if key and key not in seen:
-                    seen.add(key)
-                    keys.append(key)
-            return keys
-
-        def remember_tps(bucket, keys, tps_value):
-            for key in keys:
-                if not key:
-                    continue
-                prev = bucket.get(key)
-                if prev is None or tps_value > prev:
-                    bucket[key] = tps_value
-
-        def remember_model_used_tps(model_used, tps_value):
-            raw = str(model_used or "").strip()
-            if not raw:
-                return
-            if looks_like_model_path(raw):
-                path_keys = [norm_path_key(raw)]
-                if not os.path.isabs(raw):
-                    try:
-                        path_keys.append(norm_path_key(resolve_model_path(raw)))
-                    except Exception:
-                        pass
-                remember_tps(tps_by_path, path_keys, tps_value)
-            else:
-                remember_tps(tps_by_name, [model_name_key(raw)], tps_value)
-            remember_tps(tps_by_basename, [basename_tps_key(raw)], tps_value)
-
-        def lookup_tps(name, path):
-            for key in registry_path_tps_keys(path):
-                value = tps_by_path.get(key)
-                if value is not None:
-                    return value
-
-            path_basename_key = basename_tps_key(path)
-            name_key = model_name_key(name)
-            if name_key and (not path_basename_key or name_key == path_basename_key):
-                value = tps_by_name.get(name_key)
-                if value is not None:
-                    return value
-
-            basename_keys = []
-            if path_basename_key:
-                basename_keys.append(path_basename_key)
-            name_basename_key = basename_tps_key(name)
-            if name_basename_key and (not path_basename_key or name_basename_key == path_basename_key):
-                basename_keys.append(name_basename_key)
-
-            for key in basename_keys:
-                value = tps_by_basename.get(key)
-                if value is not None:
-                    return value
-            return None
-
-        tps_by_path = {}
-        tps_by_name = {}
-        tps_by_basename = {}
-        try:
-            sconn = sqlite3.connect(DB_PATH)
-            c = sconn.cursor()
-            c.execute("""
-                SELECT model_used, MAX(tps) AS max_tps
-                FROM chats
-                WHERE model_used IS NOT NULL AND model_used != ''
-                GROUP BY model_used
-            """)
-            for model_used, max_tps in (c.fetchall() or []):
-                try:
-                    tps_val = float(max_tps) if max_tps is not None else None
-                except Exception:
-                    tps_val = None
-                if tps_val is not None:
-                    remember_model_used_tps(model_used, tps_val)
-            sconn.close()
-        except Exception:
-            pass
-
+        tps_maps = _load_chat_max_tps_maps()
         models = []
         for r in rows:
             size_gb = 0
@@ -2541,27 +2869,28 @@ def registry_dropdown_route():
             path = r.get("model_path") or ""
             is_favorite = _as01(r.get("is_favorite"))
             split_info = _resolve_split_gguf_info(resolve_model_path(path)) if path else None
+            profiles = {field: _as01(r.get(field)) for field in MODEL_PROFILE_FIELDS}
 
             models.append({
                 "name": name,
                 "value": path,
                 "size_gb": round(size_gb, 2),
-                "max_tps": lookup_tps(name, path),
+                "max_tps": _lookup_chat_max_tps(name, path, tps_maps),
                 "is_favorite": is_favorite,
                 "is_split_gguf": bool(split_info),
                 "split_parts": int(split_info["shard_count"]) if split_info else 1,
+                "notes": str(r.get("notes") or ""),
+                "mmproj_path": str(r.get("mmproj_path") or ""),
+                **profiles,
             })
 
-        return jsonify({"status": "success", "models": models})
-    except Exception as e:
-        return jsonify({"status": "error", "message": f"Dropdown list failed: {e}"}), 500
-
-
-def auto_start_title_model():
-    gpu_count = get_gpu_count()
-    if gpu_count >= 2:
-        try:
-            requests.post(f"{_get_controller_base_url()}/model/start_title_model", timeout=10)
-            print("[INFO] Title model launched.")
-        except Exception as e:
-            print(f"[WARN] Could not auto-start title model: {e}")
+        return jsonify({
+            "status": "success",
+            "models": models,
+        })
+    except Exception as exc:
+        print(f"[ERROR] Managed model dropdown failed: {exc}")
+        return jsonify({
+            "status": "error",
+            "message": "Could not load the managed model list.",
+        }), 500

@@ -136,10 +136,13 @@ const SUPPORTED_ATTACHMENT_EXTENSIONS = [
   ".yaml", ".yml", ".csv", ".log", ".ini", ".cfg", ".bat", ".ps1", ".sh",
   ".sql", ".php", ".java", ".c", ".cpp", ".h", ".cs", ".go", ".rs"
 ];
+const SUPPORTED_IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp"];
+const SUPPORTED_IMAGE_MIME_TYPES = ["image/png", "image/jpeg", "image/webp"];
 let MAX_ATTACHMENT_FILES = 8;
 let MAX_ATTACHMENT_FILE_BYTES = 1048576;
 let MAX_ATTACHMENT_TOTAL_BYTES = 4194304;
 const SOCKET_SEND_MAX_BYTES = 10 * 1024 * 1024;
+const MAX_IMAGE_RAW_TRANSPORT_BYTES = Math.floor((SOCKET_SEND_MAX_BYTES - (512 * 1024)) * 3 / 4);
 
 function savePromptDraftForReload(promptText) {
   const text = String(promptText || "").trim();
@@ -464,24 +467,55 @@ function parseIntSettingValue(value, fallback, minValue = 0) {
   return parsed;
 }
 
-function normalizeTurnAttachmentNames(attachments) {
-  const seen = new Set();
-  const names = [];
-
-  (attachments || []).forEach((attachment) => {
-    const name = typeof attachment === "string"
-      ? attachment
-      : (attachment && typeof attachment.name === "string" ? attachment.name : "");
-    const trimmed = (name || "").trim();
-    if (!trimmed || seen.has(trimmed)) return;
-    seen.add(trimmed);
-    names.push(trimmed);
-  });
-
-  return names;
+function isSupportedImageDataUrl(value) {
+  return /^data:image\/(?:png|jpeg|webp);base64,[a-z0-9+/_=-]+$/i.test(String(value || ""));
 }
 
-function renderUserBubbleAttachments(bubble, attachments) {
+function safeAttachmentBrowserUrl(value, options = {}) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  if (raw.startsWith("blob:")) return raw;
+  if (raw.startsWith("/") && !raw.startsWith("//")) return raw;
+  if (options.image && isSupportedImageDataUrl(raw)) return raw;
+  return "";
+}
+
+function normalizeDisplayAttachments(attachments) {
+  return (Array.isArray(attachments) ? attachments : []).map((attachment, index) => {
+    if (typeof attachment === "string") {
+      const name = attachment.trim();
+      return name ? { name, kind: "file", mimeType: "", size: null, index } : null;
+    }
+    if (!attachment || typeof attachment !== "object") return null;
+
+    const name = String(attachment.name || attachment.filename || `Attachment ${index + 1}`).trim();
+    const mimeType = String(attachment.mime_type || attachment.mimeType || attachment.type || "").toLowerCase();
+    const extension = getAttachmentExtension(name);
+    const kind = String(attachment.kind || "").toLowerCase() === "image" ||
+      mimeType.startsWith("image/") || SUPPORTED_IMAGE_EXTENSIONS.includes(extension)
+      ? "image"
+      : "file";
+    const numericSize = Number(attachment.size);
+    const imageUrl = safeAttachmentBrowserUrl(
+      attachment.previewUrl || attachment.preview_url || attachment.data_url || attachment.dataUrl || attachment.url,
+      { image: true }
+    );
+    const downloadUrl = safeAttachmentBrowserUrl(attachment.download_url || attachment.downloadUrl || attachment.url);
+
+    return {
+      ...attachment,
+      name,
+      kind,
+      mimeType,
+      size: Number.isFinite(numericSize) ? numericSize : null,
+      imageUrl,
+      downloadUrl,
+      index
+    };
+  }).filter(Boolean);
+}
+
+function renderMessageAttachments(bubble, attachments) {
   if (!bubble) return;
 
   const existing = bubble.querySelector(".turn-attachment-list");
@@ -489,17 +523,49 @@ function renderUserBubbleAttachments(bubble, attachments) {
     existing.remove();
   }
 
-  const attachmentNames = normalizeTurnAttachmentNames(attachments);
-  if (!attachmentNames.length) return;
+  const normalized = normalizeDisplayAttachments(attachments);
+  bubble._attachments = normalized;
+  if (!normalized.length) return;
 
   const list = document.createElement("div");
   list.className = "turn-attachment-list";
 
-  attachmentNames.forEach((nameText) => {
-    const chip = document.createElement("span");
-    chip.className = "turn-attachment-chip";
-    chip.innerText = nameText;
-    chip.title = nameText;
+  normalized.forEach((attachment) => {
+    const chip = document.createElement(attachment.downloadUrl ? "a" : "span");
+    chip.className = `turn-attachment-chip ${attachment.kind === "image" ? "is-image" : "is-file"}`;
+    chip.title = attachment.name;
+    if (attachment.downloadUrl) {
+      chip.href = attachment.downloadUrl;
+      chip.target = "_blank";
+      chip.rel = "noopener";
+    }
+
+    if (attachment.kind === "image" && attachment.imageUrl) {
+      const image = document.createElement("img");
+      image.className = "turn-attachment-thumbnail";
+      image.src = attachment.imageUrl;
+      image.alt = attachment.name;
+      image.loading = "lazy";
+      image.setAttribute("role", "button");
+      image.setAttribute("tabindex", "0");
+      image.setAttribute("aria-label", `Open image ${attachment.name}`);
+      image.title = "Open image viewer";
+      const openViewer = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openImageAttachmentViewer(attachment.imageUrl, attachment.name);
+      };
+      image.addEventListener("click", openViewer);
+      image.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") openViewer(event);
+      });
+      chip.appendChild(image);
+    }
+
+    const label = document.createElement("span");
+    label.className = "turn-attachment-name";
+    label.innerText = attachment.name;
+    chip.appendChild(label);
     list.appendChild(chip);
   });
 
@@ -509,6 +575,61 @@ function renderUserBubbleAttachments(bubble, attachments) {
   } else {
     bubble.appendChild(list);
   }
+}
+
+let imageLightboxPreviousFocus = null;
+
+function closeImageAttachmentViewer() {
+  const modal = document.getElementById("imageLightbox");
+  const image = document.getElementById("imageLightboxImage");
+  const caption = document.getElementById("imageLightboxTitle");
+  if (!modal) return;
+
+  modal.classList.remove("active");
+  if (image) {
+    image.removeAttribute("src");
+    image.alt = "";
+  }
+  if (caption) caption.textContent = "";
+
+  if (imageLightboxPreviousFocus && document.contains(imageLightboxPreviousFocus)) {
+    imageLightboxPreviousFocus.focus();
+  }
+  imageLightboxPreviousFocus = null;
+}
+
+function openImageAttachmentViewer(source, name = "") {
+  const modal = document.getElementById("imageLightbox");
+  const image = document.getElementById("imageLightboxImage");
+  const caption = document.getElementById("imageLightboxTitle");
+  if (!modal || !image || !source) return;
+
+  imageLightboxPreviousFocus = document.activeElement;
+  image.src = String(source);
+  image.alt = String(name || "Attached image");
+  if (caption) caption.textContent = String(name || "");
+  modal.classList.add("active");
+
+  const closeButton = document.getElementById("imageLightboxClose");
+  if (closeButton) closeButton.focus();
+}
+
+function initializeImageAttachmentViewer() {
+  const modal = document.getElementById("imageLightbox");
+  if (!modal || modal.dataset.bound === "true") return;
+
+  modal.dataset.bound = "true";
+  const closeButton = document.getElementById("imageLightboxClose");
+  if (closeButton) closeButton.addEventListener("click", closeImageAttachmentViewer);
+  modal.addEventListener("click", (event) => {
+    if (event.target === modal) closeImageAttachmentViewer();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && modal.classList.contains("active")) {
+      event.preventDefault();
+      closeImageAttachmentViewer();
+    }
+  });
 }
 
 function refreshComposerButtons() {
@@ -555,7 +676,15 @@ function renderComposerAttachments() {
   preview.innerHTML = "";
   composerAttachments.forEach((attachment) => {
     const chip = document.createElement("div");
-    chip.className = "attachment-chip";
+    chip.className = `attachment-chip ${attachment.kind === "image" ? "is-image" : "is-file"}`;
+
+    if (attachment.kind === "image" && attachment.previewUrl) {
+      const thumbnail = document.createElement("img");
+      thumbnail.className = "attachment-chip-thumbnail";
+      thumbnail.src = attachment.previewUrl;
+      thumbnail.alt = "";
+      chip.appendChild(thumbnail);
+    }
 
     const name = document.createElement("span");
     name.className = "attachment-chip-name";
@@ -564,15 +693,21 @@ function renderComposerAttachments() {
 
     const meta = document.createElement("span");
     meta.className = "attachment-chip-meta";
-    meta.innerText = formatAttachmentSize(attachment.size);
+    const typeLabel = attachment.kind === "image"
+      ? String(attachment.mimeType || "image").replace("image/", "").toUpperCase()
+      : (getAttachmentExtension(attachment.name).replace(".", "").toUpperCase() || "FILE");
+    meta.innerText = [typeLabel, formatAttachmentSize(attachment.size)].filter(Boolean).join(" · ");
     chip.appendChild(meta);
 
     const removeBtn = document.createElement("button");
     removeBtn.type = "button";
     removeBtn.className = "attachment-chip-remove";
     removeBtn.innerText = "×";
+    removeBtn.title = `Remove ${attachment.name}`;
+    removeBtn.setAttribute("aria-label", `Remove ${attachment.name}`);
     removeBtn.disabled = isPreparingSend || isResponding;
     removeBtn.onclick = function () {
+      releaseAttachmentPreview(attachment);
       composerAttachments = composerAttachments.filter((item) => item.id !== attachment.id);
       renderComposerAttachments();
     };
@@ -584,13 +719,70 @@ function renderComposerAttachments() {
   queueFixedLayoutMetricsUpdate();
 }
 
+function releaseAttachmentPreview(attachment) {
+  const previewUrl = String(attachment?.previewUrl || "");
+  if (previewUrl.startsWith("blob:") && window.URL && typeof window.URL.revokeObjectURL === "function") {
+    window.URL.revokeObjectURL(previewUrl);
+  }
+}
+
 function clearComposerAttachments() {
+  composerAttachments.forEach(releaseAttachmentPreview);
   composerAttachments = [];
   const attachmentInput = document.getElementById("chatAttachmentInput");
   if (attachmentInput) {
     attachmentInput.value = "";
   }
   renderComposerAttachments();
+}
+
+function loadComposerAttachmentsFromRecords(records) {
+  const normalized = normalizeDisplayAttachments(records);
+  const hydrated = [];
+
+  normalized.forEach((attachment) => {
+    if (attachment.kind === "image") {
+      const dataUrl = String(attachment.data_url || attachment.dataUrl || attachment.imageUrl || "");
+      if (!isSupportedImageDataUrl(dataUrl)) return;
+      hydrated.push({
+        id: crypto.randomUUID ? crypto.randomUUID() : (Date.now() + "-" + Math.random().toString(16).slice(2)),
+        name: attachment.name,
+        size: attachment.size || 0,
+        lastModified: null,
+        kind: "image",
+        mimeType: attachment.mimeType || dataUrl.slice(5, dataUrl.indexOf(";")),
+        previewUrl: dataUrl,
+        dataUrl,
+        file: null
+      });
+      return;
+    }
+
+    if (typeof attachment.content !== "string") return;
+    hydrated.push({
+      id: crypto.randomUUID ? crypto.randomUUID() : (Date.now() + "-" + Math.random().toString(16).slice(2)),
+      name: attachment.name,
+      size: attachment.size || 0,
+      lastModified: null,
+      kind: "file",
+      mimeType: attachment.mimeType || "text/plain",
+      previewUrl: "",
+      content: attachment.content,
+      file: null
+    });
+  });
+
+  const complete = hydrated.length === normalized.length;
+  composerAttachments.forEach(releaseAttachmentPreview);
+  composerAttachments = complete ? hydrated : [];
+  const attachmentInput = document.getElementById("chatAttachmentInput");
+  if (attachmentInput) attachmentInput.value = "";
+  renderComposerAttachments();
+
+  return {
+    count: composerAttachments.length,
+    complete
+  };
 }
 
 function updateScrollToBottomButtonVisibility() {
@@ -661,35 +853,84 @@ function scrollChatMessagesToBottom(chatMessages) {
   }
 }
 
-function handleAttachmentSelection(event) {
-  const input = event.target;
-  const pickedFiles = Array.from(input?.files || []);
-  if (!pickedFiles.length) return;
+function sanitizeBrowserAttachmentName(value) {
+  const raw = String(value || "").replace(/\u0000/g, "").trim();
+  const basename = raw.split(/[\\/]/).pop() || "";
+  return basename.slice(0, 255);
+}
+
+function imageExtensionForMime(mimeType) {
+  if (mimeType === "image/png") return ".png";
+  if (mimeType === "image/jpeg") return ".jpg";
+  if (mimeType === "image/webp") return ".webp";
+  return "";
+}
+
+function imageMimeForExtension(extension) {
+  if (extension === ".png") return "image/png";
+  if (extension === ".jpg" || extension === ".jpeg") return "image/jpeg";
+  if (extension === ".webp") return "image/webp";
+  return "";
+}
+
+function ingestAttachmentFiles(files, options = {}) {
+  const pickedFiles = Array.from(files || []).filter(Boolean);
+  if (!pickedFiles.length || isPreparingSend || isResponding) return 0;
 
   let totalBytes = composerAttachments.reduce((sum, attachment) => sum + (attachment.size || 0), 0);
-  const existingKeys = new Set(composerAttachments.map((attachment) => `${attachment.name}|${attachment.size}|${attachment.lastModified}`));
+  let totalImageBytes = composerAttachments.reduce(
+    (sum, attachment) => sum + (attachment.kind === "image" ? (attachment.size || 0) : 0),
+    0
+  );
   const rejected = [];
+  let accepted = 0;
 
-  for (const file of pickedFiles) {
-    const ext = getAttachmentExtension(file.name);
-    const fileKey = `${file.name}|${file.size}|${file.lastModified}`;
+  for (let index = 0; index < pickedFiles.length; index += 1) {
+    const file = pickedFiles[index];
+    const browserMime = String(file.type || "").trim().toLowerCase();
+    const reportedMime = browserMime === "application/octet-stream" ? "" : browserMime;
+    let name = sanitizeBrowserAttachmentName(file.name);
+    let extension = getAttachmentExtension(name);
+    const imageByMime = SUPPORTED_IMAGE_MIME_TYPES.includes(reportedMime);
 
-    if (!SUPPORTED_ATTACHMENT_EXTENSIONS.includes(ext)) {
-      rejected.push(`${file.name} is not a supported text/code file.`);
+    if (imageByMime && !extension) {
+      const sourcePrefix = options.source === "paste" ? "pasted-image" : "image";
+      name = `${sourcePrefix}-${Date.now()}-${index + 1}${imageExtensionForMime(reportedMime)}`;
+      extension = getAttachmentExtension(name);
+    }
+
+    const imageByExtension = SUPPORTED_IMAGE_EXTENSIONS.includes(extension);
+    const expectedImageMime = imageMimeForExtension(extension);
+    const kind = imageByExtension ? "image" : "file";
+
+    if (!name) {
+      rejected.push("An attachment has no usable filename.");
+      continue;
+    }
+    if (reportedMime.startsWith("image/") && !imageByMime) {
+      rejected.push(`${name} is not a supported image. Use PNG, JPEG, or WebP.`);
+      continue;
+    }
+    if (kind === "image" && reportedMime && (!imageByMime || reportedMime !== expectedImageMime)) {
+      rejected.push(`${name} has an image type that does not match its filename.`);
+      continue;
+    }
+    if (kind !== "image" && imageByMime) {
+      rejected.push(`${name} needs a PNG, JPG, JPEG, or WebP filename extension.`);
+      continue;
+    }
+    if (kind !== "image" && !SUPPORTED_ATTACHMENT_EXTENSIONS.includes(extension)) {
+      rejected.push(`${name} is not a supported text/code file or image.`);
       continue;
     }
 
     if (file.size <= 0) {
-      rejected.push(`${file.name} is empty.`);
+      rejected.push(`${name} is empty.`);
       continue;
     }
 
     if (file.size > MAX_ATTACHMENT_FILE_BYTES) {
-      rejected.push(`${file.name} exceeds the ${Math.round(MAX_ATTACHMENT_FILE_BYTES / 1024)} KB per-file limit.`);
-      continue;
-    }
-
-    if (existingKeys.has(fileKey)) {
+      rejected.push(`${name} exceeds the ${Math.round(MAX_ATTACHMENT_FILE_BYTES / 1024)} KB per-file limit.`);
       continue;
     }
 
@@ -702,34 +943,100 @@ function handleAttachmentSelection(event) {
       rejected.push(`Total attachments exceed the ${Math.round(MAX_ATTACHMENT_TOTAL_BYTES / (1024 * 1024))} MB limit.`);
       break;
     }
+    if (kind === "image" && (totalImageBytes + file.size) > MAX_IMAGE_RAW_TRANSPORT_BYTES) {
+      rejected.push("Combined images are too large for the chat transport. Remove an image or use smaller files.");
+      break;
+    }
+
+    let previewUrl = "";
+    if (kind === "image" && window.URL && typeof window.URL.createObjectURL === "function") {
+      previewUrl = window.URL.createObjectURL(file);
+    }
 
     composerAttachments.push({
       id: crypto.randomUUID ? crypto.randomUUID() : (Date.now() + "-" + Math.random().toString(16).slice(2)),
-      name: file.name,
+      name,
       size: file.size,
       lastModified: file.lastModified,
+      kind,
+      mimeType: kind === "image" ? (reportedMime || expectedImageMime) : (reportedMime || "text/plain"),
+      previewUrl,
       file
     });
-    existingKeys.add(fileKey);
     totalBytes += file.size;
+    if (kind === "image") totalImageBytes += file.size;
+    accepted += 1;
   }
 
-  input.value = "";
   renderComposerAttachments();
 
   if (rejected.length) {
     showCustomAlert(rejected.join("\n"));
   }
+  return accepted;
+}
+
+function handleAttachmentSelection(event) {
+  const input = event.target;
+  ingestAttachmentFiles(input?.files || [], { source: "picker" });
+  if (input) input.value = "";
+}
+
+window.ingestAttachmentFiles = ingestAttachmentFiles;
+
+function dataTransferHasFiles(dataTransfer) {
+  return Array.from(dataTransfer?.types || []).includes("Files") ||
+    Array.from(dataTransfer?.items || []).some(item => item.kind === "file");
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("The image could not be read."));
+    reader.readAsDataURL(file);
+  });
 }
 
 async function buildAttachmentPayload() {
   const payload = [];
+  const imageBytes = composerAttachments.reduce(
+    (sum, attachment) => sum + (attachment.kind === "image" ? (attachment.size || 0) : 0),
+    0
+  );
+  if (imageBytes > MAX_IMAGE_RAW_TRANSPORT_BYTES) {
+    throw new Error("Combined images are too large for the chat transport. Remove an image or use smaller files.");
+  }
   for (const attachment of composerAttachments) {
-    let text = "";
-    try {
-      text = await attachment.file.text();
-    } catch (err) {
-      throw new Error(`Could not read ${attachment.name} as text.`);
+    if (attachment.kind === "image") {
+      let dataUrl = String(attachment.dataUrl || "");
+      if (!dataUrl && attachment.file) {
+        try {
+          dataUrl = await readFileAsDataUrl(attachment.file);
+        } catch (err) {
+          throw new Error(`Could not read ${attachment.name} as an image.`);
+        }
+      }
+      if (!isSupportedImageDataUrl(dataUrl)) {
+        throw new Error(`${attachment.name} is not a supported PNG, JPEG, or WebP image.`);
+      }
+      payload.push({
+        name: attachment.name,
+        size: attachment.size,
+        kind: "image",
+        mime_type: attachment.mimeType,
+        data_url: dataUrl
+      });
+      continue;
+    }
+
+    let text = typeof attachment.content === "string" ? attachment.content : "";
+    if (!text && attachment.file) {
+      try {
+        text = await attachment.file.text();
+      } catch (err) {
+        throw new Error(`Could not read ${attachment.name} as text.`);
+      }
     }
 
     if (!text) {
@@ -742,6 +1049,8 @@ async function buildAttachmentPayload() {
     payload.push({
       name: attachment.name,
       size: attachment.size,
+      kind: "file",
+      mime_type: attachment.mimeType,
       content: text
     });
   }
@@ -1075,7 +1384,7 @@ function captureUserBubbleSnapshot(bubble) {
   return {
     messageId: bubble.dataset.messageId || "",
     messageText: messageDiv ? messageDiv.textContent : "",
-    attachmentNames: Array.from(bubble.querySelectorAll(".turn-attachment-chip")).map((chip) => (chip.textContent || "").trim()).filter(Boolean)
+    attachments: Array.isArray(bubble._attachments) ? bubble._attachments.map(attachment => ({ ...attachment })) : []
   };
 }
 
@@ -1131,7 +1440,7 @@ function restoreEditedTurnSnapshot(messageId) {
   userBubble.dataset.messageId = snapshot.userSnapshot.messageId || "";
   botBubble.dataset.messageId = snapshot.botSnapshot.messageId || "";
   setUserBubbleText(userBubble, snapshot.userSnapshot.messageText);
-  renderUserBubbleAttachments(userBubble, snapshot.userSnapshot.attachmentNames || []);
+  renderMessageAttachments(userBubble, snapshot.userSnapshot.attachments || []);
   restoreBotBubbleFromSnapshot(snapshot.botSnapshot, botBubble);
 
   editPromptSnapshots.delete(messageId);
@@ -1164,6 +1473,7 @@ function startPromptEdit(messageId, messageText) {
   if (isResponding || !messageId) return;
 
   if (pendingPromptEdit && pendingPromptEdit.sourceMessageId === messageId) {
+    clearComposerAttachments();
     clearPromptEditState();
     return;
   }
@@ -1174,8 +1484,12 @@ function startPromptEdit(messageId, messageText) {
 
   closeOpenDrawerWithTogglePath();
 
+  const userBubble = findUserBubbleByMessageId(messageId);
+  const attachmentState = loadComposerAttachmentsFromRecords(userBubble?._attachments || []);
+
   pendingPromptEdit = {
-    sourceMessageId: messageId
+    sourceMessageId: messageId,
+    preserveStoredAttachments: !attachmentState.complete
   };
   input.value = messageText || "";
   autoResize(input);
@@ -1388,6 +1702,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const sidebar = document.querySelector(".sidebar");
   const sidebarToggle = document.getElementById("sidebarToggle");
   const chatMessages = document.getElementById("chatMessages");
+  const chatInput = document.getElementById("chatInput");
+  const chatInputContainer = document.querySelector(".chat-input-container");
   const attachFilesBtn = document.getElementById("attachFilesBtn");
   const chatAttachmentInput = document.getElementById("chatAttachmentInput");
   const chatContainer = document.querySelector(".chat-container");
@@ -1403,7 +1719,11 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
   if (chatAttachmentInput) {
-    chatAttachmentInput.accept = SUPPORTED_ATTACHMENT_EXTENSIONS.join(",");
+    chatAttachmentInput.accept = [
+      ...SUPPORTED_ATTACHMENT_EXTENSIONS,
+      ...SUPPORTED_IMAGE_EXTENSIONS,
+      ...SUPPORTED_IMAGE_MIME_TYPES
+    ].join(",");
     chatAttachmentInput.addEventListener("change", handleAttachmentSelection);
   }
   if (attachFilesBtn && chatAttachmentInput) {
@@ -1412,7 +1732,60 @@ document.addEventListener("DOMContentLoaded", () => {
       chatAttachmentInput.click();
     });
   }
+  if (chatInput) {
+    chatInput.addEventListener("paste", (event) => {
+      const pastedFiles = Array.from(event.clipboardData?.items || [])
+        .filter(item => item.kind === "file")
+        .map(item => item.getAsFile())
+        .filter(Boolean);
+      if (!pastedFiles.length) return;
+      const accepted = ingestAttachmentFiles(pastedFiles, { source: "paste" });
+      if (accepted > 0) {
+        const pastedText = event.clipboardData?.getData("text/plain") || "";
+        if (pastedText) {
+          const start = Number.isInteger(chatInput.selectionStart) ? chatInput.selectionStart : chatInput.value.length;
+          const end = Number.isInteger(chatInput.selectionEnd) ? chatInput.selectionEnd : start;
+          if (typeof chatInput.setRangeText === "function") {
+            chatInput.setRangeText(pastedText, start, end, "end");
+          } else {
+            chatInput.value = `${chatInput.value.slice(0, start)}${pastedText}${chatInput.value.slice(end)}`;
+            const cursor = start + pastedText.length;
+            if (typeof chatInput.setSelectionRange === "function") chatInput.setSelectionRange(cursor, cursor);
+          }
+          chatInput.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+        event.preventDefault();
+      }
+    });
+  }
+  if (chatInputContainer) {
+    let dragDepth = 0;
+    chatInputContainer.addEventListener("dragenter", (event) => {
+      if (!dataTransferHasFiles(event.dataTransfer)) return;
+      event.preventDefault();
+      dragDepth += 1;
+      chatInputContainer.classList.add("is-file-dragover");
+    });
+    chatInputContainer.addEventListener("dragover", (event) => {
+      if (!dataTransferHasFiles(event.dataTransfer)) return;
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+    });
+    chatInputContainer.addEventListener("dragleave", (event) => {
+      dragDepth = Math.max(0, dragDepth - 1);
+      if (dragDepth === 0) chatInputContainer.classList.remove("is-file-dragover");
+    });
+    chatInputContainer.addEventListener("drop", (event) => {
+      if (!dataTransferHasFiles(event.dataTransfer)) return;
+      event.preventDefault();
+      dragDepth = 0;
+      chatInputContainer.classList.remove("is-file-dragover");
+      ingestAttachmentFiles(event.dataTransfer?.files || [], { source: "drop" });
+    });
+  }
   initializeCpuOnlyToggle();
+  initializeApiAccessControls();
+  initializeImageAttachmentViewer();
   initializeFixedLayoutMetricsObserver();
   refreshComposerButtons();
   renderComposerAttachments();
@@ -1430,6 +1803,9 @@ document.addEventListener("DOMContentLoaded", () => {
     sidebar.classList.toggle("open");
     updateChatForSidebar();
     if (window.innerWidth <= 1080) {
+      if (document.getElementById("adminDrawer")?.classList.contains("open")) {
+        clearApiKeyReveal();
+      }
       document.querySelectorAll('.drawer.open').forEach(drawer => {
         drawer.classList.remove('open');
       });
@@ -1458,20 +1834,6 @@ document.addEventListener("DOMContentLoaded", () => {
     console.warn("New Chat button not found.");
   }
 
-  const saveSettingsBtn = document.getElementById("saveSettingsBtn");
-  if (saveSettingsBtn) {
-    // Replace the node to remove previously attached listeners.
-    const fresh = saveSettingsBtn.cloneNode(true);
-    saveSettingsBtn.parentNode.replaceChild(fresh, saveSettingsBtn);
-
-    fresh.addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      saveSettings();
-    });
-  }
-
-
   loadSettings();
 
   loadChatHistory();
@@ -1486,18 +1848,22 @@ socket.on("connect", function () {
   }
 });
 
-socket.on("update_session_name", function(data) {
+socket.on("update_session_name", function() {
   loadChatHistory();
-  loadSettings();
 });
 
 function toggleDrawer(drawerId) {
   const allDrawers = document.querySelectorAll('.drawer');
   const drawer = document.getElementById(drawerId);
+  const adminDrawer = document.getElementById('adminDrawer');
   const chatInput = document.querySelector('.chat-input-container');
   const drawerBar = document.querySelector('.drawer-bar');
 
   if (!drawer) return;
+
+  if (drawerId === 'adminDrawer' || adminDrawer?.classList.contains('open')) {
+    clearApiKeyReveal();
+  }
 
   if (drawer.classList.contains('open')) {
     allDrawers.forEach(d => d.classList.remove('open'));
@@ -1511,7 +1877,9 @@ function toggleDrawer(drawerId) {
   drawer.classList.add('open');
   if (chatInput) chatInput.style.display = 'none';
 
-  if (drawerId === "adminDrawer" && typeof loadSettings === "function") loadSettings();
+  if (drawerId === "adminDrawer") {
+    if (typeof loadSettings === "function") loadSettings();
+  }
   if (drawerId === "analyticsDrawer" && typeof window.fetchAnalytics === "function") window.fetchAnalytics();
   if (drawerId === "modelDrawer" && typeof loadModelDropdown === "function") {
     loadModelDropdown();
@@ -1524,6 +1892,9 @@ function toggleDrawer(drawerId) {
 }
 
 function closeAllDrawers() {
+  if (document.getElementById('adminDrawer')?.classList.contains('open')) {
+    clearApiKeyReveal();
+  }
   document.querySelectorAll('.drawer').forEach(d => d.classList.remove('open'));
   const chatInput = document.querySelector('.chat-input-container');
   if (chatInput) chatInput.style.display = '';
@@ -1557,6 +1928,152 @@ function renderAuthReadinessPanel(auth) {
   `;
 }
 
+let apiAccessState = { enabled: false, key_configured: false, active: false };
+
+function renderApiAccessState(api, options = {}) {
+  const incoming = api && typeof api === "object" ? api : {};
+  apiAccessState = {
+    enabled: Boolean(incoming.enabled),
+    key_configured: Boolean(incoming.key_configured),
+    active: Boolean(incoming.active)
+  };
+
+  const enabledInput = document.getElementById("apiAccessEnabled");
+  const status = document.getElementById("apiAccessStatus");
+  const generateBtn = document.getElementById("apiKeyGenerateBtn");
+  const revokeBtn = document.getElementById("apiKeyRevokeBtn");
+
+  if (enabledInput && !options.preserveEnabledInput) enabledInput.checked = apiAccessState.enabled;
+  if (status) {
+    const enabledText = apiAccessState.enabled ? "Enabled" : "Disabled";
+    const keyText = apiAccessState.key_configured ? "Key configured" : "No key configured";
+    const activeText = apiAccessState.active ? "Active" : "Inactive";
+    status.textContent = `${enabledText} · ${keyText} · ${activeText}`;
+    status.dataset.state = apiAccessState.active ? "active" : (apiAccessState.enabled ? "warning" : "inactive");
+  }
+  if (generateBtn) generateBtn.textContent = apiAccessState.key_configured ? "Regenerate Key" : "Generate Key";
+  if (revokeBtn) revokeBtn.disabled = !apiAccessState.key_configured;
+}
+
+function clearApiKeyReveal() {
+  const reveal = document.getElementById("apiKeyReveal");
+  const input = document.getElementById("apiKeyPlaintext");
+  if (input) input.value = "";
+  if (reveal) reveal.hidden = true;
+}
+
+function revealGeneratedApiKey(apiKey) {
+  const reveal = document.getElementById("apiKeyReveal");
+  const input = document.getElementById("apiKeyPlaintext");
+  if (!reveal || !input) return;
+  input.value = String(apiKey || "");
+  reveal.hidden = false;
+  input.focus();
+  input.select();
+}
+
+async function regenerateApiKey() {
+  if (apiAccessState.key_configured && !window.confirm("Regenerate the API key? The current key will stop working immediately.")) {
+    return;
+  }
+
+  const button = document.getElementById("apiKeyGenerateBtn");
+  const csrfToken = (document.getElementById("adminCsrfToken")?.value || "").trim();
+  if (!csrfToken) {
+    showCustomAlert("Missing CSRF token.");
+    return;
+  }
+
+  if (button) button.disabled = true;
+  try {
+    const data = await window.ApiHttp.postJSONRequest(
+      `${SETTINGS_PREFIX}/api_key/regenerate`,
+      {},
+      { csrfToken },
+      "API key generation failed."
+    );
+    if (!data || data.status !== "success" || !data.api_key) {
+      throw new Error(data?.message || data?.error || "API key generation failed.");
+    }
+    renderApiAccessState(data.api || { ...apiAccessState, key_configured: true }, { preserveEnabledInput: true });
+    revealGeneratedApiKey(data.api_key);
+  } catch (err) {
+    if (!isRedirectingToLoginError(err)) {
+      showCustomAlert(getActionErrorMessage("API key error", err, "API key generation failed."));
+    }
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function revokeApiKey() {
+  if (!apiAccessState.key_configured) return;
+  if (!window.confirm("Revoke the API key? Existing clients will immediately lose access.")) return;
+
+  const button = document.getElementById("apiKeyRevokeBtn");
+  const csrfToken = (document.getElementById("adminCsrfToken")?.value || "").trim();
+  if (!csrfToken) {
+    showCustomAlert("Missing CSRF token.");
+    return;
+  }
+
+  if (button) button.disabled = true;
+  try {
+    const data = await window.ApiHttp.postJSONRequest(
+      `${SETTINGS_PREFIX}/api_key/revoke`,
+      {},
+      { csrfToken },
+      "API key revocation failed."
+    );
+    if (!data || data.status !== "success") {
+      throw new Error(data?.message || data?.error || "API key revocation failed.");
+    }
+    clearApiKeyReveal();
+    renderApiAccessState(
+      data.api || { enabled: false, key_configured: false, active: false }
+    );
+  } catch (err) {
+    if (!isRedirectingToLoginError(err)) {
+      showCustomAlert(getActionErrorMessage("API key error", err, "API key revocation failed."));
+    }
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+function initializeApiAccessControls() {
+  const generateBtn = document.getElementById("apiKeyGenerateBtn");
+  const revokeBtn = document.getElementById("apiKeyRevokeBtn");
+  const copyBtn = document.getElementById("apiKeyCopyBtn");
+  const baseUrlInput = document.getElementById("apiBaseUrl");
+  const baseUrlCopyBtn = document.getElementById("apiBaseUrlCopyBtn");
+
+  if (baseUrlInput) baseUrlInput.value = `${window.location.origin}/v1`;
+
+  if (generateBtn && generateBtn.dataset.bound !== "1") {
+    generateBtn.dataset.bound = "1";
+    generateBtn.addEventListener("click", regenerateApiKey);
+  }
+  if (revokeBtn && revokeBtn.dataset.bound !== "1") {
+    revokeBtn.dataset.bound = "1";
+    revokeBtn.addEventListener("click", revokeApiKey);
+  }
+  if (copyBtn && copyBtn.dataset.bound !== "1") {
+    copyBtn.dataset.bound = "1";
+    copyBtn.addEventListener("click", () => {
+      const input = document.getElementById("apiKeyPlaintext");
+      if (input?.value) copyTextToClipboard(input.value, copyBtn);
+    });
+  }
+  if (baseUrlCopyBtn && baseUrlCopyBtn.dataset.bound !== "1") {
+    baseUrlCopyBtn.dataset.bound = "1";
+    baseUrlCopyBtn.addEventListener("click", () => {
+      const input = document.getElementById("apiBaseUrl");
+      if (input?.value) copyTextToClipboard(input.value, baseUrlCopyBtn);
+    });
+  }
+}
+
 function loadSettings() {
   fetch(`${SETTINGS_PREFIX}/get_settings`, { credentials: "same-origin" })
     .then(r => r.json())
@@ -1574,12 +2091,33 @@ function loadSettings() {
         el.checked = Boolean(val);
       };
 
+      const setAttachmentLimitMb = (id, byteValue) => {
+        const el = document.getElementById(id);
+        const bytes = Number(byteValue);
+        if (!el || !Number.isFinite(bytes)) return;
+        const exactMb = bytes / (1024 * 1024);
+        const nearestMb = Math.round(exactMb);
+        const displayMb = Math.abs(exactMb - nearestMb) < 0.05 ? nearestMb : exactMb;
+        el.value = String(displayMb);
+        el.dataset.originalBytes = String(Math.round(bytes));
+        el.dataset.mbEdited = "false";
+        if (el.dataset.mbConversionBound !== "true") {
+          el.dataset.mbConversionBound = "true";
+          el.addEventListener("input", () => { el.dataset.mbEdited = "true"; });
+        }
+      };
+
       // Admin drawer
       setVal("dbHostInput", data.db_host);
       setVal("dbPortInput", data.db_port);
       setVal("llamaServerPathInput", data.llama_server_path);
       setVal("llamaMainPortInput", data.llama_main_port);
       setVal("llamaTitlePortInput", data.llama_title_port);
+      if (typeof window.setTitleModelSelection === "function") {
+        window.setTitleModelSelection(data.title_model_path || "");
+      } else {
+        setVal("titleModelPathInput", data.title_model_path || "");
+      }
       setVal("scanDirectoryInput", data.scan_directory);
       setVal("versionDisplay", data.version);
 
@@ -1596,8 +2134,8 @@ function loadSettings() {
       setVal("defaultRepeatPenalty", data.repeat_penalty);
       setVal("defaultSeed",          data.seed);
       setVal("attachmentMaxFiles", data.attachments_max_files);
-      setVal("attachmentMaxFileBytes", data.attachments_max_file_bytes);
-      setVal("attachmentMaxTotalBytes", data.attachments_max_total_bytes);
+      setAttachmentLimitMb("attachmentMaxFileBytes", data.attachments_max_file_bytes);
+      setAttachmentLimitMb("attachmentMaxTotalBytes", data.attachments_max_total_bytes);
       setVal("attachmentMaxContextChars", data.attachments_max_context_chars);
       setVal("attachmentChunkMaxLines", data.attachments_chunk_max_lines);
       setVal("attachmentChunkOverlapLines", data.attachments_chunk_overlap_lines);
@@ -1621,6 +2159,7 @@ function loadSettings() {
         setVal("authEmailCooldown", data.auth.email_token_request_cooldown_seconds);
         renderAuthReadinessPanel(data.auth);
       }
+      renderApiAccessState(data.api);
 
       MAX_ATTACHMENT_FILES = parseIntSettingValue(data.attachments_max_files, 8, 1);
       MAX_ATTACHMENT_FILE_BYTES = parseIntSettingValue(data.attachments_max_file_bytes, 1048576, 1);
@@ -1659,6 +2198,15 @@ function saveSettings() {
     const el = document.getElementById(id);
     return el ? Boolean(el.checked) : false;
   };
+  const getAttachmentLimitBytes = (id) => {
+    const el = document.getElementById(id);
+    if (!el) return "";
+    if (el.dataset.mbEdited !== "true" && el.dataset.originalBytes) {
+      return el.dataset.originalBytes;
+    }
+    const mb = Number(el.value);
+    return Number.isFinite(mb) ? String(Math.round(mb * 1024 * 1024)) : el.value;
+  };
 
   // Admin-only guard (save button exists only for admin)
   const saveBtnEl = document.getElementById("saveSettingsBtn");
@@ -1683,6 +2231,10 @@ function saveSettings() {
     llama_server_path: getVal("llamaServerPathInput").trim(),
     llama_main_port:   getVal("llamaMainPortInput"),
     llama_title_port:  getVal("llamaTitlePortInput"),
+    title_model_path: typeof window.getTitleModelSelection === "function"
+      ? window.getTitleModelSelection()
+      : getVal("titleModelPathInput").trim(),
+    api_enabled:       getChecked("apiAccessEnabled"),
     n_gpu_layers:     getVal("defaultGpuLayers"),
     n_cpu_threads:    getVal("defaultCpuThreads"),
     dual_gpu_split_threshold_gb: getVal("dualGpuSplitThresholdGb"),
@@ -1692,8 +2244,8 @@ function saveSettings() {
     repeat_penalty:   getVal("defaultRepeatPenalty"),
     seed:             getVal("defaultSeed"),
     attachments_max_files: getVal("attachmentMaxFiles"),
-    attachments_max_file_bytes: getVal("attachmentMaxFileBytes"),
-    attachments_max_total_bytes: getVal("attachmentMaxTotalBytes"),
+    attachments_max_file_bytes: getAttachmentLimitBytes("attachmentMaxFileBytes"),
+    attachments_max_total_bytes: getAttachmentLimitBytes("attachmentMaxTotalBytes"),
     attachments_max_context_chars: getVal("attachmentMaxContextChars"),
     attachments_chunk_max_lines: getVal("attachmentChunkMaxLines"),
     attachments_chunk_overlap_lines: getVal("attachmentChunkOverlapLines"),
@@ -1861,9 +2413,14 @@ async function sendChat() {
 
   const input = document.getElementById("chatInput");
   const message = input.value.trim();
-  if (!message) return;
+  if (!message && composerAttachments.length === 0) return;
 
-  let attachmentPayload = [];
+  const isEdit = Boolean(pendingPromptEdit && pendingPromptEdit.sourceMessageId);
+  const sourceMessageId = isEdit ? pendingPromptEdit.sourceMessageId : null;
+  const preserveStoredAttachments = Boolean(
+    isEdit && pendingPromptEdit.preserveStoredAttachments && composerAttachments.length === 0
+  );
+  let attachmentPayload = preserveStoredAttachments ? null : [];
   try {
     isPreparingSend = true;
     refreshComposerButtons();
@@ -1886,7 +2443,9 @@ async function sendChat() {
       }
     }
 
-    attachmentPayload = await buildAttachmentPayload();
+    if (!preserveStoredAttachments) {
+      attachmentPayload = await buildAttachmentPayload();
+    }
   } catch (err) {
     if (isStaleAsyncError(err) || err?.reloadRequired) {
       savePromptDraftForReload(message);
@@ -1903,15 +2462,15 @@ async function sendChat() {
     return;
   }
 
-  const isEdit = Boolean(pendingPromptEdit && pendingPromptEdit.sourceMessageId);
-  const sourceMessageId = isEdit ? pendingPromptEdit.sourceMessageId : null;
   const messageId = (crypto.randomUUID ? crypto.randomUUID() : (Date.now() + "-" + Math.random().toString(16).slice(2)));
   const payload = {
     session_id: currentSessionId,
     message: message,
-    message_id: messageId,
-    attachments: attachmentPayload
+    message_id: messageId
   };
+  if (attachmentPayload !== null) {
+    payload.attachments = attachmentPayload;
+  }
   if (sourceMessageId) {
     payload.edit_prompt_id = sourceMessageId;
   }
@@ -1941,13 +2500,18 @@ async function sendChat() {
       botSnapshot: {
         ...captureBotBubbleSnapshot(botBubble),
         messageId: botBubble.dataset.messageId || ""
+      },
+      retryDraft: {
+        sourceMessageId,
+        message,
+        preserveStoredAttachments
       }
     });
 
     userBubble.dataset.messageId = messageId;
     setUserBubbleText(userBubble, message);
-    if (attachmentPayload.length > 0) {
-      renderUserBubbleAttachments(userBubble, attachmentPayload);
+    if (attachmentPayload !== null) {
+      renderMessageAttachments(userBubble, attachmentPayload);
     }
 
     botBubble.dataset.messageId = messageId;
@@ -1978,32 +2542,6 @@ async function sendChat() {
   renderComposerAttachments();
 
   socket.emit("send_message", payload);
-}
-
-function renderChatMessage(userMessage, botResponse, thoughts, metrics) {
-  appendUserMessage(userMessage);
-
-  let botBubble = createBotBubble();
-  let messageDiv = botBubble.querySelector('.message');
-  messageDiv.innerHTML = "";
-
-  const cleaned = (botResponse || "").replace(/\n{3,}/g, "\n\n").trim();
-  const standardized = extractAndStandardizeMath(cleaned);
-  messageDiv.innerHTML = renderSafeMarkdown(standardized);
-  enhanceCodeBlocks(messageDiv);
-  if (window.MathJax && window.MathJax.typesetPromise) {
-    window.MathJax.typesetPromise([messageDiv]);
-  }
-
-  if (thoughts && thoughts.trim() !== "") {
-    let thoughtsDiv = botBubble.querySelector('.thoughts');
-    thoughtsDiv.textContent = thoughts.trim();
-  }  
-
-  let footer = botBubble.querySelector('.footer');
-  if (metrics && metrics.tps != null && metrics.response_time != null && metrics.total_tokens != null) {
-    footer.innerText = formatResponseFooter(metrics);
-  }
 }
 
 function loadChat(session_id) {
@@ -2045,7 +2583,7 @@ function loadChat(session_id) {
         if (!msg.user_message && !msg.bot_response) return;
         appendUserMessage(msg.user_message, {
           messageId: msg.prompt_id,
-          attachments: msg.attachment_names || []
+          attachments: msg.attachments || []
         });
 
         const botBubble = createBotBubble();
@@ -2092,6 +2630,7 @@ function loadChat(session_id) {
         if (footer && msg.tps != null && msg.response_time != null && msg.total_tokens != null) {
           footer.innerText = formatResponseFooter(msg);
         }
+        renderMessageAttachments(botBubble, msg.assistant_attachments || msg.bot_attachments || []);
       });
 
       refreshAssistantBubbleControls();
@@ -2131,16 +2670,10 @@ session_id, new_name
   }).then(() => loadChatHistory());
 }
 
-function formatResponseMetrics(metrics, footer) {
-  footer.innerText = formatResponseFooter(metrics);
-}
-
 function getModelDisplayName(pathOrName) {
   if (!pathOrName) return '';
-  let name = String(pathOrName).split(/[\\/]/).pop();
-  name = name.replace(/\.[^/.]+$/, "");
-  name = name.replace(/-\d{5}-of-\d{5}$/i, "");
-  return name;
+  const name = String(pathOrName).split(/[\\/]/).pop();
+  return name.replace(/\.gguf$/i, "");
 }
 
 function setModelStartLoadingState(isStarting, modelPath = "") {
@@ -2313,9 +2846,12 @@ function pollModelStatus() {
   fetch(`${MODEL_PREFIX}/model_status`)
     .then(response => response.json())
     .then(data => {
+      if (typeof window.updateTitleModelStatus === "function") window.updateTitleModelStatus(data);
       const statusEl = document.getElementById('modelStatusText');
       const modelEl  = document.getElementById('currentModel');
       const modeEl   = document.getElementById('currentRuntimeMode');
+      const mmprojRow = document.getElementById('currentMmprojRow');
+      const mmprojEl = document.getElementById('currentMmproj');
       const gpuEl    = document.getElementById('currentGpuLayers');
       const cpuEl    = document.getElementById('currentCpuThreads');
       const tmpEl    = document.getElementById('currentTemperature');
@@ -2336,14 +2872,6 @@ function pollModelStatus() {
       // Safe setter (so this works for non-admin users too)
       const setText = (el, txt) => { if (el) el.innerText = (txt ?? ""); };
 
-      function getModelDisplayName(pathOrName) {
-        if (!pathOrName) return '';
-        let name = String(pathOrName).split(/[\\/]/).pop(); // handles full path or already-basename
-        name = name.replace(/\.[^/.]+$/, "");               // drop extension
-        name = name.replace(/-\d{5}-of-\d{5}$/i, "");
-        return name;
-      }
-
       if (modelStartInProgress) {
         modelLoaded = false;
         setText(statusEl, 'Starting model...');
@@ -2361,6 +2889,8 @@ function pollModelStatus() {
         setText(pEl, '');
         setText(rEl, '');
         setText(seedEl, '');
+        setText(mmprojEl, '');
+        if (mmprojRow) mmprojRow.hidden = true;
         return;
       }
 
@@ -2368,7 +2898,7 @@ function pollModelStatus() {
         modelLoaded = true;
         setText(statusEl, '✅ Running');
 
-        const modelDisplay = data.current_model ? getModelDisplayName(data.current_model) : 'Unknown';
+        const modelDisplay = data.current_model ? String(data.current_model) : 'Unknown';
         setText(modelEl, modelDisplay);
 
         const s = data.settings || {};
@@ -2377,6 +2907,8 @@ function pollModelStatus() {
         const runtimeCpuThreads = runtime.n_threads ?? CPU_THREADS ?? '';
         const runtimeMode = String(runtime.runtime_mode || "").toLowerCase();
         const runtimeModeLabel = runtime.runtime_mode_label || (runtimeMode === "cpu" ? "Running on CPU" : (runtimeMode === "gpu" ? "Running on GPU" : ""));
+        const mmprojFilename = String(runtime.mmproj_filename || "").trim();
+        const mmprojDisplay = getModelDisplayName(mmprojFilename);
 
         GPU_LAYERS = runtimeGpuLayers !== '' ? String(runtimeGpuLayers) : GPU_LAYERS;
         CPU_THREADS = runtimeCpuThreads !== '' ? String(runtimeCpuThreads) : CPU_THREADS;
@@ -2388,6 +2920,8 @@ function pollModelStatus() {
         setText(pEl,    s['top-p']          || '');
         setText(rEl,    s['repeat-penalty'] || '');
         setText(seedEl, s['seed']           || '');
+        setText(mmprojEl, mmprojDisplay);
+        if (mmprojRow) mmprojRow.hidden = !mmprojFilename;
         if (modeEl) {
           setText(modeEl, runtimeModeLabel || '-');
           modeEl.className = `runtime-mode-indicator${runtimeMode ? ` ${runtimeMode}` : ''}`;
@@ -2396,9 +2930,9 @@ function pollModelStatus() {
 
         // Everyone gets title updates (admin or not).
         if (data.current_model) {
-          const shortName = getModelDisplayName(data.current_model);
-          document.title = shortName;
-          if (appTitle) appTitle.innerText = shortName;
+          const modelTitle = String(data.current_model);
+          document.title = modelTitle;
+          if (appTitle) appTitle.innerText = modelTitle;
         }
 
       } else {
@@ -2416,6 +2950,8 @@ function pollModelStatus() {
         setText(pEl, '');
         setText(rEl, '');
         setText(seedEl, '');
+        setText(mmprojEl, '');
+        if (mmprojRow) mmprojRow.hidden = true;
 
         // Restore default app title/branding
         document.title = pollModelStatus.defaultTitle || "LLM Controller";
@@ -2446,20 +2982,10 @@ function pollModelStatus() {
 })();
 
 function initModelDrawer() {
-  // Populate form with saved defaults…
-  loadSettings();
-
   // Populate "Running Model" panel with live data…
   pollModelStatus();
 }
 
-
-function handleEnter(event) {
-  if (event.key !== 'Enter' || event.shiftKey) return;
-
-  event.preventDefault();
-  sendChat();
-}
 
 function appendUserMessage(message, options = {}) {
   const chatMessages = document.getElementById("chatMessages");
@@ -2488,7 +3014,7 @@ function appendUserMessage(message, options = {}) {
   actions.appendChild(editBtn);
 
   bubble.appendChild(actions);
-  renderUserBubbleAttachments(bubble, options.attachments || []);
+  renderMessageAttachments(bubble, options.attachments || []);
   chatMessages.appendChild(bubble);
   chatMessages.scrollTop = chatMessages.scrollHeight;
   return bubble;
@@ -2834,6 +3360,7 @@ socket.on("receive_message", function (data) {
       if (footer) {
         footer.innerText = formatResponseFooter(data);
       }
+      renderMessageAttachments(bubble, data.assistant_attachments || data.bot_attachments || []);
     }
 
     regenerateSnapshots.delete(messageId);
@@ -2841,7 +3368,10 @@ socket.on("receive_message", function (data) {
     stopRequestedMessageId = null;
     isResponding = false;
     currentGenerationMode = null;
-    if (completedMode === "send" || completedMode === "edit_prompt") {
+    const preserveAttachments = Boolean(
+      data.preserve_attachments || data.attachment_error || data.error || data.status === "error"
+    );
+    if ((completedMode === "send" || completedMode === "edit_prompt") && !preserveAttachments) {
       clearComposerAttachments();
     }
     refreshComposerButtons();
@@ -2879,7 +3409,19 @@ socket.on("chat_error", function (data) {
       restoreBotBubbleSnapshot(messageId);
     }
     if (data?.action === "edit_prompt" && messageId) {
+      const retryDraft = editPromptSnapshots.get(messageId)?.retryDraft || null;
       restoreEditedTurnSnapshot(messageId);
+      if (retryDraft?.sourceMessageId) {
+        const input = document.getElementById("chatInput");
+        pendingPromptEdit = {
+          sourceMessageId: retryDraft.sourceMessageId,
+          preserveStoredAttachments: Boolean(retryDraft.preserveStoredAttachments)
+        };
+        if (input) {
+          input.value = retryDraft.message || "";
+          autoResize(input);
+        }
+      }
     }
 
     stopRequestedMessageId = null;

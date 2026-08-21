@@ -97,14 +97,14 @@
         </div>
         <button id="scrollToBottomBtn" class="scroll-to-bottom-btn" type="button" aria-label="Scroll to bottom" title="Scroll to bottom" aria-hidden="true">↓</button>
         <div class="chat-input-container">
-            <div id="attachmentPreview" class="attachment-preview-list"></div>
+            <div id="attachmentPreview" class="attachment-preview-list" aria-live="polite"></div>
             <div class="chat-input-row">
                 <input id="chatAttachmentInput" type="file" multiple hidden>
                 <textarea id="chatInput" placeholder="Ask anything" rows="1" onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
-                <button id="attachFilesBtn" class="send-button attach-files-btn" type="button" title="Attach text or code files">📎</button>
-                <button id="sendButton" class="send-button" onclick="sendChat()">➡️ Send</button>
+               <button id="attachFilesBtn" class="send-button attach-files-btn" type="button" title="Attach files or images" aria-label="Attach files or images">📎</button>
+               <button id="sendButton" class="send-button" onclick="sendChat()">➡️ Send</button>
                 <button  class="send-button" onclick="sendDebugChat()">🔎 Debug</button>
-            </div>
+           </div>
         </div>
         <div id="showControlsBar" class="show-controls-bar mobile-only">
             <button id="showControlsBtn" onclick="showDrawerBar()">▲ Control Panel</button>
@@ -127,15 +127,14 @@
 
     {% if session.get('user_id') %}
     <div id="modelDrawer" class="drawer">
+    <div class="drawer-header">
+        <span>🧠 Model</span>
+        <button class="drawer-close-btn" onclick="toggleDrawer('modelDrawer')">✖</button>
+    </div>
     <div class="model-drawer-grid">
 
         {% if session.get('role') == 'admin' %}
         <div class="model-settings">
-        <DIV CLASS="drawer-header">
-            <h3>🧠 Model</h3>
-            <button class="drawer-close-btn" onclick="toggleDrawer('modelDrawer')">✖</button>
-        </DIV>
-
         <div class="form-row" id="modelSortControlsWrapper">
             <div class="form-row" id="modelSortControls">
             <button type="button" class="sort-btn" id="sortNameAsc" title="Name A–Z">
@@ -164,8 +163,8 @@
             <div class="form-label">Model:</div>
 
             <div id="modelDropdown" class="dropdown-container">
-            <div id="dropdown-selected" class="dropdown-selected">Model | Max tokens/s | Size (GB)</div>
-            <div class="dropdown-list" id="dropdownList"></div>
+            <div id="dropdown-selected" class="dropdown-selected" role="combobox" tabindex="0" aria-haspopup="listbox" aria-controls="dropdownList" aria-expanded="false">Model | Max TPS | Size (GB)</div>
+            <div class="dropdown-list" id="dropdownList" role="listbox" hidden></div>
             </div>
 
             <input type="hidden" id="modelSelect" name="modelSelect">
@@ -204,6 +203,7 @@
         <p><b>Status:</b> <span id="modelStatusText">❌ Not Running</span></p>
         <p><b>Current Model:</b> <span id="currentModel">N/A</span></p>
         <p><b>Runtime Mode:</b> <span id="currentRuntimeMode" class="runtime-mode-indicator">-</span></p>
+        <p id="currentMmprojRow" hidden><b>MMPROJ:</b> <span id="currentMmproj"></span></p>
         <p><b>GPU Layers:</b> <span id="currentGpuLayers">-</span></p>
         <p><b>CPU Threads:</b> <span id="currentCpuThreads">-</span></p>
         <p><b>Temperature:</b> <span id="currentTemperature">-</span></p>
@@ -360,7 +360,6 @@
                 <tbody id="adminChatsTableBody"></tbody>
               </table>
           
-              <pre id="adminChatUsersOut" class="admin-pre" style="display:none;"></pre>
             </div>
           {% endif %}
         </div>
@@ -418,7 +417,7 @@
         </div>
         </section>
 
-        <details class="bench-prompt-disclosure">
+        <details class="collapsible-section bench-prompt-disclosure">
           <summary>
             <span>CE Benchmark Questions</span>
             <span class="bench-prompt-count">5 prompts</span>
@@ -480,9 +479,12 @@
 
       </div>
       <section id="benchDetailsView" class="bench-details-view" aria-labelledby="benchDetailsTitle" hidden>
-        <div class="bench-detail-toolbar">
-            <button id="benchBackToResultsBtn" type="button" class="bench-back-btn">Back to Results</button>
-            <h3 id="benchDetailsTitle">Selected run details</h3>
+        <div class="bench-detail-header">
+            <div class="bench-detail-toolbar">
+                <button id="benchBackToResultsBtn" type="button" class="bench-back-btn">Back to Results</button>
+                <h3 id="benchDetailsTitle">Selected run details</h3>
+            </div>
+            <nav id="benchDetailNav" class="bench-detail-nav" aria-label="Selected run navigation" hidden></nav>
         </div>
         <div id="benchDetails" class="bench-details-render" aria-live="polite"></div>
       </section>
@@ -533,15 +535,15 @@
 
         </section>
 
-        <section class="admin-section admin-section-wide admin-registry-section">
-            <div class="admin-registry-head">
+        <details class="collapsible-section admin-section-wide admin-registry-disclosure">
+            <summary>
+                <span>Model Registry</span>
+                <span id="adminRegistryStatus" class="admin-registry-status"></span>
+            </summary>
+            <div id="adminRegistryContent" class="admin-registry-content">
             <div class="admin-section-heading">
-                <h3>Model Registry</h3>
-                <p>Discover GGUF files and control model availability, favorites, and benchmark eligibility.</p>
+                <p>Manage availability, profiles, notes, projector files, favorites, and benchmark eligibility.</p>
             </div>
-            <div id="adminRegistryStatus" class="admin-registry-status"></div>
-            </div>
-
             <div class="params-grid admin-registry-toolbar">
             <div class="form-row">
                 <label>&nbsp;</label>
@@ -570,24 +572,24 @@
                 <colgroup>
                     <col class="admin-registry-state-col">
                     <col class="admin-registry-name-col">
-                    <col class="admin-registry-size-col">
-                    <col class="admin-registry-date-col">
+                    <col class="admin-registry-tps-col">
+                    <col class="admin-registry-file-col">
                     <col class="admin-registry-actions-col">
                 </colgroup>
                 <thead>
                     <tr>
                         <th>🚦</th>
-                        <th>Filename</th>
-                        <th>Size (GB)</th>
-                        <th>File Date</th>
+                        <th>Model &amp; Metadata</th>
+                        <th>Max TPS</th>
+                        <th>File</th>
                         <th>Actions</th>
                     </tr>
                   </thead>                                  
                 <tbody id="adminRegistryTbody"></tbody>
             </table>
             </div>
-
-        </section>
+            </div>
+        </details>
 
         <section class="admin-section admin-defaults-section">
         <div class="admin-section-heading">
@@ -607,6 +609,17 @@
             <div class="form-row">
               <label for="llamaTitlePortInput">Llama Title Port:</label>
               <input type="number" id="llamaTitlePortInput" min="1" max="65535">
+            </div>
+            <div class="form-row admin-title-model-row">
+              <label for="titleModelSelected">Title Model:</label>
+              <div class="admin-title-model-control">
+                <div id="titleModelDropdown" class="dropdown-container admin-model-picker">
+                  <div id="titleModelSelected" class="dropdown-selected" role="combobox" tabindex="0" aria-haspopup="listbox" aria-controls="titleModelList" aria-expanded="false">Select Title Generation Model</div>
+                  <div class="dropdown-list" id="titleModelList" role="listbox" hidden></div>
+                </div>
+                <input type="hidden" id="titleModelPathInput" value="">
+                <div id="titleModelStatus" class="admin-inline-status" aria-live="polite">Using main model fallback.</div>
+              </div>
             </div>
             <div class="form-row">
               <label for="scanDirectoryInput">Models DIR:</label>
@@ -648,7 +661,57 @@
 
         </section>
 
-        <section class="admin-section admin-attachments-section">
+        <section class="admin-section admin-api-section">
+        <div class="admin-section-heading">
+            <h3>API Access</h3>
+            <p>Controlled Bearer-key access to the supported OpenAI-compatible endpoints.</p>
+        </div>
+        <div class="params-grid">
+            <div class="form-row">
+              <label for="apiAccessEnabled">External API Enabled:</label>
+              <input type="checkbox" id="apiAccessEnabled">
+            </div>
+        </div>
+        <div id="apiAccessStatus" class="admin-api-status" aria-live="polite">Loading API status…</div>
+        <div class="admin-api-actions">
+          <button id="apiKeyGenerateBtn" type="button" class="start-model-btn">Generate Key</button>
+          <button id="apiKeyRevokeBtn" type="button" class="admin-danger-btn">Revoke Key</button>
+        </div>
+        <div id="apiKeyReveal" class="admin-api-key-reveal" hidden>
+          <label for="apiKeyPlaintext">New API key — copy it now. It will not be shown again.</label>
+          <div class="admin-api-key-copy-row">
+            <input id="apiKeyPlaintext" type="text" readonly autocomplete="off" spellcheck="false">
+            <button id="apiKeyCopyBtn" type="button">Copy</button>
+          </div>
+        </div>
+        <div class="admin-api-connection">
+          <h4>Connection Information</h4>
+          <div class="params-grid">
+            <div class="form-row">
+              <label for="apiBaseUrl">API Base URL:</label>
+              <div class="admin-api-key-copy-row">
+                <input id="apiBaseUrl" type="text" readonly autocomplete="off" spellcheck="false">
+                <button id="apiBaseUrlCopyBtn" type="button">Copy</button>
+              </div>
+            </div>
+            <div class="form-row">
+              <label>Authentication:</label>
+              <span>Bearer API key</span>
+            </div>
+            <div class="form-row">
+              <label>Models:</label>
+              <span>GET /v1/models</span>
+            </div>
+            <div class="form-row">
+              <label>Chat Completions:</label>
+              <span>POST /v1/chat/completions</span>
+            </div>
+          </div>
+          <div class="admin-inline-status">OpenAI-compatible API. Use the Base URL above and your generated API key with compatible applications and libraries.</div>
+        </div>
+        </section>
+
+        <section class="admin-section admin-section-wide admin-attachments-section">
         <div class="admin-section-heading">
             <h3>Attachment Settings</h3>
             <p>Limits applied to uploaded files and extracted context.</p>
@@ -660,11 +723,11 @@
               <input type="number" id="attachmentMaxFiles">
             </div>
             <div class="form-row">
-              <label for="attachmentMaxFileBytes">Max file size per attachment (bytes):</label>
+              <label for="attachmentMaxFileBytes">Max file size per attachment (MB):</label>
               <input type="number" id="attachmentMaxFileBytes">
             </div>
             <div class="form-row">
-              <label for="attachmentMaxTotalBytes">Max total attachment size (bytes):</label>
+              <label for="attachmentMaxTotalBytes">Max total attachment size (MB):</label>
               <input type="number" id="attachmentMaxTotalBytes">
             </div>
             <div class="form-row">
@@ -751,8 +814,16 @@
 {% set about_version = version %}
 {% include "_about_modal.html" %}
 
+<div class="modal-overlay image-lightbox-overlay" id="imageLightbox" role="dialog" aria-modal="true" aria-labelledby="imageLightboxTitle">
+    <div class="image-lightbox-card">
+        <button type="button" id="imageLightboxClose" class="image-lightbox-close" aria-label="Close image viewer" title="Close image viewer">&times;</button>
+        <img id="imageLightboxImage" class="image-lightbox-image" alt="">
+        <div id="imageLightboxTitle" class="image-lightbox-caption"></div>
+    </div>
+</div>
 
-  <div class="settings-modal-overlay" id="userSettingsModal" style="display:none;">
+
+<div class="settings-modal-overlay" id="userSettingsModal" style="display:none;">
     <div class="user-modal-card">
       <button class="user-close-btn" onclick="toggleUserSettingsModal(false)">✖</button>
       <h3>Account Settings</h3>
@@ -924,55 +995,6 @@
             })
             .catch(e => showCustomAlert("Delete failed: " + e));
         }
-
-        function renderAdminChatUsersTable(users) {
-            const table = document.getElementById("adminChatsTable");
-            const tbody = document.getElementById("adminChatsTableBody");
-
-            if (!table || !tbody) {
-                const out = document.getElementById('adminChatUsersOut');
-                if (out) {
-                out.style.display = "";
-                out.textContent = JSON.stringify({ users }, null, 2);
-                }
-                return;
-            }
-
-            tbody.innerHTML = "";
-
-            if (!users || users.length === 0) {
-                table.style.display = "none";
-                showCustomAlert("No users with chats found.");
-                return;
-            }
-
-            users.sort((a, b) => (b.last_timestamp || 0) - (a.last_timestamp || 0));
-
-            for (const u of users) {
-                const userId = u.user_id ?? "";
-                const rows = u.rows ?? 0;
-                const sessions = u.sessions ?? 0;
-
-                const rawTs = u.last_timestamp ?? null;
-                const prettyTs = formatUnixTimestamp(rawTs);
-
-                const tr = document.createElement("tr");
-                tr.innerHTML = `
-                <td>${userId}</td>
-                <td>${rows}</td>
-                <td>${sessions}</td>
-                <td title="${rawTs ?? ''}" data-ts="${rawTs ?? ''}">${prettyTs}</td>
-                <td class="actions-cell">
-                    <button type="button" onclick="adminExportUserChats(${userId})">Export</button>
-                    <button type="button" class="user-action-btn" onclick="adminDeleteUserChatsById(${userId})">Delete</button>
-                </td>
-                `;
-                tbody.appendChild(tr);
-            }
-
-            table.style.display = "";
-        }
-
 
         function adminDeleteAllChats() {
         if (!confirm("Delete ALL chats for ALL users? This cannot be undone.")) return;

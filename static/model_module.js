@@ -2,6 +2,10 @@
   window.models = window.models || [];
   window.currentModelSort = window.currentModelSort || { by: "name", dir: "asc" };
   window.selectedModelValue = window.selectedModelValue || null;
+  window.titleModelValue = window.titleModelValue || "";
+
+  let mainPicker = null;
+  let titlePicker = null;
 
   function asNum(v, def = 0) {
     const n = Number(v);
@@ -17,31 +21,6 @@
     return false;
   }
 
-  function escapeHtml(value) {
-    if (typeof window.escapeHtml === "function") {
-      return window.escapeHtml(String(value ?? ""));
-    }
-    return String(value ?? "").replace(/[&<>"']/g, ch => ({
-      "&": "&amp;",
-      "<": "&lt;",
-      ">": "&gt;",
-      "\"": "&quot;",
-      "'": "&#39;"
-    }[ch]));
-  }
-
-  function normKey(s) {
-    // Normalize into a stable lookup key:
-    // - basename
-    // - strip .gguf
-    // - lowercase
-    if (!s) return "";
-    const str = String(s).trim();
-    const base = str.split(/[\\/]/).pop() || str;
-    const noext = base.replace(/\.gguf$/i, "");
-    return noext.toLowerCase();
-  }
-
   async function fetchJsonOrThrow(url) {
     const res = await fetch(url, { credentials: "same-origin", cache: "no-store" });
     const ct = (res.headers.get("content-type") || "").toLowerCase();
@@ -54,173 +33,366 @@
     return data;
   }
 
-  async function loadRegistryMap() {
-    // Registry list is admin-only; if it 401/403 we just continue without registry features.
-    try {
-      const data = await fetchJsonOrThrow("/model/registry/list");
-      if (!data || data.status !== "success" || !Array.isArray(data.models)) return null;
-
-      const map = new Map();
-      for (const r of data.models) {
-        // registry has model_name and model_path
-        const k1 = normKey(r.model_name);
-        const k2 = normKey(r.model_path);
-        if (k1) map.set(k1, r);
-        if (k2) map.set(k2, r);
-      }
-      return map;
-    } catch (e) {
-      // Silent fallback: dropdown still works, just no registry filtering
-      console.warn("[model_module] registry/list unavailable:", e.message || e);
-      return null;
-    }
+  function formatMaxTps(model) {
+    const value = asNum(model && model.max_tps, 0);
+    return value > 0 ? `Max ${Math.round(value)} TPS` : "Max TPS —";
   }
 
-  function mergeRegistryFields(models, regMap) {
-    if (!regMap) return models;
+  function appendModelSummary(target, model) {
+    target.textContent = "";
+    const primary = document.createElement("div");
+    primary.className = "model-picker-primary";
 
-    for (const m of models) {
-      // Try matching by value, name, etc.
-      const kValue = normKey(m.value);
-      const kName = normKey(m.name);
-      const row = regMap.get(kValue) || regMap.get(kName);
-
-      if (row) {
-        m.is_enabled = row.is_enabled;
-        m.is_favorite = row.is_favorite;
-      }
+    const name = document.createElement("span");
+    name.className = "model-name";
+    name.textContent = `${yn(model.is_favorite) ? "⭐ " : ""}${String(model.name || model.value || "Unknown model")}`;
+    if (String(model.mmproj_path || "").trim()) {
+      const imageMarker = document.createElement("span");
+      imageMarker.className = "model-img-marker";
+      imageMarker.setAttribute("role", "img");
+      imageMarker.setAttribute("aria-label", "Image-capable model");
+      imageMarker.title = "Image-capable model";
+      imageMarker.innerHTML = `
+        <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+          <rect x="1.5" y="2" width="13" height="12" rx="1.5"></rect>
+          <circle cx="5.2" cy="5.4" r="1.1"></circle>
+          <path d="m3 12 3.2-3 2.2 2 1.7-1.7L13 12.5"></path>
+        </svg>
+      `;
+      name.appendChild(imageMarker);
     }
-    return models;
+    primary.appendChild(name);
+
+    const tps = document.createElement("span");
+    const measured = asNum(model.max_tps, 0) > 0;
+    tps.className = `model-tps ${measured ? "is-measured" : "is-missing"}`;
+    tps.textContent = formatMaxTps(model);
+    primary.appendChild(tps);
+
+    const size = document.createElement("span");
+    size.className = "model-size";
+    const sizeValue = asNum(model.size_gb, 0);
+    size.textContent = sizeValue > 0 ? `${sizeValue} GB` : "Size —";
+    primary.appendChild(size);
+    target.appendChild(primary);
   }
 
-  window.loadModelDropdown = function loadModelDropdown() {
-    (async () => {
-      try {
-        const data = await fetchJsonOrThrow("/model/registry/dropdown");
-        let list = (data && Array.isArray(data.models)) ? data.models : [];
+  function createModelPicker(config) {
+    const selected = document.getElementById(config.selectedId);
+    const list = document.getElementById(config.listId);
+    if (!selected || !list) return null;
 
-        const regMap = await loadRegistryMap();
-        list = mergeRegistryFields(list, regMap);
+    let pickerModels = [];
+    let isOpen = false;
 
-        if (regMap) {
-          list = list.filter(m => yn(m.is_enabled) !== false);
-        }
+    selected.setAttribute("role", "combobox");
+    selected.setAttribute("tabindex", "0");
+    selected.setAttribute("aria-haspopup", "listbox");
+    selected.setAttribute("aria-autocomplete", "none");
+    selected.setAttribute("aria-label", config.ariaLabel || "Model");
+    selected.setAttribute("aria-controls", config.listId);
+    list.setAttribute("role", "listbox");
 
-        if (window.selectedModelValue) {
-          const stillThere = list.some(m => m.value === window.selectedModelValue);
-          if (!stillThere) window.selectedModelValue = null;
-        }
+    function currentValue() {
+      return String(config.getValue() || "");
+    }
 
-        window.models = list;
+    function close(options = {}) {
+      isOpen = false;
+      list.hidden = true;
+      selected.classList.remove("open");
+      selected.setAttribute("aria-expanded", "false");
+      if (options.focus) selected.focus();
+    }
 
-        window.sortModels(window.currentModelSort.by, window.currentModelSort.dir === "asc");
-        window.renderModelDropdown();
-      } catch (err) {
-        console.error("[model_module] loadModelDropdown failed:", err);
+    function getOptions() {
+      return Array.from(list.querySelectorAll('[role="option"]'));
+    }
+
+    function focusOption(index) {
+      const options = getOptions();
+      if (!options.length) return;
+      const bounded = (index + options.length) % options.length;
+      options[bounded].focus();
+    }
+
+    function open(focusSelected = false) {
+      if (!list.childElementCount) return;
+      isOpen = true;
+      list.hidden = false;
+      selected.classList.add("open");
+      selected.setAttribute("aria-expanded", "true");
+      if (focusSelected) {
+        const options = getOptions();
+        const selectedIndex = Math.max(0, options.findIndex(option => option.getAttribute("aria-selected") === "true"));
+        focusOption(selectedIndex);
       }
-    })();
-  };
+    }
 
-  // Sorting utility
-  window.sortModels = function sortModels(by, asc) {
-    window.models.sort((a, b) => {
-      // Favorites float to top
+    function choose(value) {
+      config.setValue(String(value || ""));
+      render();
+      close({ focus: true });
+      if (typeof config.onSelect === "function") config.onSelect(String(value || ""));
+    }
+
+    function onOptionKeydown(event) {
+      const options = getOptions();
+      const index = options.indexOf(event.currentTarget);
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        focusOption(index + (event.key === "ArrowDown" ? 1 : -1));
+      } else if (event.key === "Home" || event.key === "End") {
+        event.preventDefault();
+        focusOption(event.key === "Home" ? 0 : options.length - 1);
+      } else if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        choose(event.currentTarget.dataset.value || "");
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        close({ focus: true });
+      } else if (event.key === "Tab") {
+        close();
+      }
+    }
+
+    function makeOption(value, model, label) {
+      const option = document.createElement("div");
+      option.className = "dropdown-item";
+      option.dataset.value = String(value || "");
+      option.setAttribute("role", "option");
+      option.setAttribute("tabindex", "-1");
+      option.setAttribute("aria-selected", currentValue() === String(value || "") ? "true" : "false");
+      if (model) {
+        appendModelSummary(option, model);
+      } else {
+        const prompt = document.createElement("span");
+        prompt.className = "model-picker-placeholder";
+        prompt.textContent = label;
+        option.appendChild(prompt);
+      }
+      option.addEventListener("click", () => choose(value));
+      option.addEventListener("keydown", onOptionKeydown);
+      return option;
+    }
+
+    function render() {
+      const value = currentValue();
+      const current = pickerModels.find(model => String(model.value || "") === value);
+      list.textContent = "";
+
+      if (config.allowBlank) {
+        list.appendChild(makeOption("", null, config.blankLabel));
+      }
+      pickerModels.forEach(model => list.appendChild(makeOption(model.value, model)));
+
+      if (current) {
+        appendModelSummary(selected, current);
+      } else {
+        selected.textContent = "";
+        const prompt = document.createElement("span");
+        prompt.className = "model-picker-placeholder";
+        prompt.textContent = config.allowBlank ? config.blankLabel : config.placeholder;
+        selected.appendChild(prompt);
+      }
+    }
+
+    selected.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (isOpen) close(); else open(false);
+    });
+    selected.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        open(true);
+      } else if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        if (isOpen) close(); else open(true);
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        close();
+      } else if (event.key === "Tab") {
+        close();
+      }
+    });
+    list.addEventListener("click", event => event.stopPropagation());
+    document.addEventListener("click", () => close());
+
+    close();
+    render();
+
+    return {
+      close,
+      open,
+      render,
+      setModels(models) {
+        pickerModels = Array.isArray(models) ? [...models] : [];
+        if (typeof config.sortModels === "function") pickerModels.sort(config.sortModels);
+        const value = currentValue();
+        if (value && !pickerModels.some(model => String(model.value || "") === value)) {
+          config.setValue("");
+          if (typeof config.onInvalid === "function") config.onInvalid(value);
+        }
+        render();
+      },
+      setValue(value, options = {}) {
+        const normalized = String(value || "");
+        if (options.validate !== false && normalized && !pickerModels.some(model => String(model.value || "") === normalized)) {
+          config.setValue("");
+          if (typeof config.onInvalid === "function") config.onInvalid(normalized);
+        } else {
+          config.setValue(normalized);
+        }
+        render();
+      }
+    };
+  }
+
+  window.createModelPicker = createModelPicker;
+  window.formatModelMaxTps = formatMaxTps;
+
+  function compareModels(a, b, by, asc, options = {}) {
+    if (options.favoritesFirst !== false) {
       const favA = yn(a.is_favorite) ? 1 : 0;
       const favB = yn(b.is_favorite) ? 1 : 0;
       if (favA !== favB) return favB - favA;
+    }
 
-      if (by === "name") return asc ? String(a.name).localeCompare(String(b.name)) : String(b.name).localeCompare(String(a.name));
-      if (by === "size") return asc ? (asNum(a.size_gb) - asNum(b.size_gb)) : (asNum(b.size_gb) - asNum(a.size_gb));
-      if (by === "tps") {
-        const tpsA = asNum(a.max_tps, 0);
-        const tpsB = asNum(b.max_tps, 0);
-        return asc ? (tpsA - tpsB) : (tpsB - tpsA);
-      }
-      return 0;
-    });
+    let result = 0;
+    if (by === "name") result = String(a.name).localeCompare(String(b.name));
+    if (by === "size") result = asNum(a.size_gb) - asNum(b.size_gb);
+    if (by === "tps") result = asNum(a.max_tps, 0) - asNum(b.max_tps, 0);
+
+    if (result !== 0) return asc ? result : -result;
+    return options.nameTiebreak ? String(a.name).localeCompare(String(b.name)) : 0;
+  }
+
+  // Sorting utility
+  window.sortModels = function sortModels(by, asc) {
+    window.models.sort((a, b) => compareModels(a, b, by, asc));
   };
 
-  // Render dropdown list (and set "selected" row)
-  window.renderModelDropdown = function renderModelDropdown() {
-    const list = document.getElementById("dropdownList");
-    const selectedDiv = document.getElementById("dropdown-selected");
-    if (!list || !selectedDiv) return;
+  function setHiddenValue(id, value) {
+    const input = document.getElementById(id);
+    if (input) input.value = String(value || "");
+  }
 
-    list.innerHTML = "";
+  function setTitleStatus(text, state = "") {
+    const status = document.getElementById("titleModelStatus");
+    if (!status) return;
+    status.textContent = text;
+    status.dataset.state = state;
+  }
 
-    window.models.forEach(model => {
-      const div = document.createElement("div");
-      div.className = "dropdown-item";
-      div.setAttribute("data-value", model.value);
-      div.setAttribute("data-name", model.name);
-      div.setAttribute("data-size", model.size_gb);
+  function ensurePickers() {
+    if (!mainPicker) {
+      mainPicker = createModelPicker({
+        selectedId: "dropdown-selected",
+        listId: "dropdownList",
+        ariaLabel: "Chat model",
+        placeholder: "Select a model…",
+        getValue: () => window.selectedModelValue || "",
+        setValue: (value) => {
+          window.selectedModelValue = value || null;
+          setHiddenValue("modelSelect", value);
+        }
+      });
+    }
 
-      // Highlight background if selected
-      if (window.selectedModelValue === model.value) {
-        div.style.background = "#195a85";
-        div.style.color = "#fff";
-      }
+    if (!titlePicker) {
+      titlePicker = createModelPicker({
+        selectedId: "titleModelSelected",
+        listId: "titleModelList",
+        ariaLabel: "Title generation model",
+        allowBlank: true,
+        blankLabel: "Select Title Generation Model",
+        sortModels: (a, b) => compareModels(a, b, "tps", false, {
+          favoritesFirst: false,
+          nameTiebreak: true
+        }),
+        getValue: () => window.titleModelValue || "",
+        setValue: (value) => {
+          window.titleModelValue = String(value || "");
+          setHiddenValue("titleModelPathInput", value);
+        },
+        onSelect: (value) => {
+          window.updateTitleModelStatus();
+          if (!value) setTitleStatus("Using main model fallback.", "fallback");
+        },
+        onInvalid: () => setTitleStatus("Selected title model is unavailable; using main model fallback.", "warning")
+      });
+    }
+  }
 
-      const tpsVal = asNum(model.max_tps, 0);
-      const isFav = yn(model.is_favorite);
+  window.setTitleModelSelection = function setTitleModelSelection(value) {
+    window.titleModelValue = String(value || "");
+    setHiddenValue("titleModelPathInput", window.titleModelValue);
+    ensurePickers();
+    if (titlePicker) titlePicker.setValue(window.titleModelValue, { validate: window.models.length > 0 });
+    window.updateTitleModelStatus();
+  };
 
-      const tpsHtml = (tpsVal > 0)
-        ? `<span class="model-tps" style="float:right; color:lime; font-family:monospace; margin-left:8px; font-size:1em;">
-             ${Math.round(tpsVal)} token/s
-           </span>`
-        : `<span class="model-tps" style="float:right; color:#85c1e9; font-size:0.9em; margin-left:8px;">No TPS</span>`;
+  window.getTitleModelSelection = function getTitleModelSelection() {
+    return String(window.titleModelValue || "");
+  };
 
-      div.innerHTML = `
-        <span class="model-name" style="float:left">${isFav ? "⭐ " : ""}${escapeHtml(model.name)}</span>
-        <span class="model-size" style="float:right; opacity:0.7">${escapeHtml(model.size_gb)} GB</span>
-        ${tpsHtml}
-        <div style="clear:both"></div>
-      `;
+  window.updateTitleModelStatus = function updateTitleModelStatus(statusData) {
+    const selectedPath = String(window.titleModelValue || "");
+    if (!selectedPath) {
+      setTitleStatus("Using main model fallback.", "fallback");
+      return;
+    }
 
-      div.onclick = function () {
-        window.selectedModelValue = model.value;
-        const sel = document.getElementById("modelSelect");
-        if (sel) sel.value = model.value;
+    const root = statusData && typeof statusData === "object" ? statusData : {};
+    const info = root.title_generation && typeof root.title_generation === "object"
+      ? root.title_generation
+      : null;
 
-        // Re-render so highlight moves!
-        window.renderModelDropdown();
-        window.closeDropdown();
-      };
-
-      list.appendChild(div);
-    });
-
-    // When no model selected, show prompt
-    const selectedModel = window.models.find(m => m.value === window.selectedModelValue);
-    if (selectedModel) {
-      const tpsVal = asNum(selectedModel.max_tps, 0);
-      const isFav = yn(selectedModel.is_favorite);
-
-      selectedDiv.innerHTML = `
-        <span class="model-name">${isFav ? "⭐ " : ""}${escapeHtml(selectedModel.name)}</span>
-        <span style="opacity:0.7">(${escapeHtml(selectedModel.size_gb)} GB)</span>
-        <span style="color:lime; font-family:monospace; margin-left:8px;">
-          ${tpsVal > 0 ? (Math.round(tpsVal) + " token/s") : "No TPS"}
-        </span>
-      `;
+    if (!info) {
+      setTitleStatus("Dedicated title model selected. Save settings to apply it.", "selected");
+    } else if (String(info.selected_model_path || "") !== selectedPath) {
+      setTitleStatus("Dedicated title model selected. Save settings to apply it.", "selected");
+    } else if (String(info.dedicated_runtime || "").toLowerCase() === "starting") {
+      setTitleStatus("Dedicated title runtime starting; using main model fallback for now.", "warning");
+    } else if (String(info.dedicated_runtime || "").toLowerCase() === "stopped") {
+      setTitleStatus("Dedicated title model configured for the next eligible main-model launch; using main model fallback now.", "selected");
+    } else if (info.fallback_active) {
+      setTitleStatus("Dedicated title model unavailable; using main model fallback.", "warning");
+    } else if (String(info.dedicated_runtime || "").toLowerCase() === "running") {
+      setTitleStatus("Dedicated title model active.", "active");
+    } else if (String(info.mode || "").toLowerCase() === "dedicated") {
+      setTitleStatus("Dedicated title model configured.", "selected");
     } else {
-      selectedDiv.innerHTML = `<span style="opacity:0.7">Select a model...</span>`;
+      setTitleStatus("Using main model fallback until the dedicated title runtime is available.", "fallback");
     }
   };
 
-  // Dropdown open/close logic
+  window.loadModelDropdown = async function loadModelDropdown() {
+    try {
+      const data = await fetchJsonOrThrow("/model/registry/dropdown");
+      window.models = (data && Array.isArray(data.models)) ? data.models : [];
+      window.sortModels(window.currentModelSort.by, window.currentModelSort.dir === "asc");
+      ensurePickers();
+      if (mainPicker) mainPicker.setModels(window.models);
+      if (titlePicker) titlePicker.setModels(window.models);
+    } catch (err) {
+      console.error("[model_module] loadModelDropdown failed:", err);
+    }
+  };
+
+  window.renderModelDropdown = function renderModelDropdown() {
+    ensurePickers();
+    if (mainPicker) mainPicker.setModels(window.models);
+    if (titlePicker) titlePicker.setModels(window.models);
+  };
+
   window.openDropdown = function openDropdown() {
-    const list = document.getElementById("dropdownList");
-    const sel = document.getElementById("dropdown-selected");
-    if (list) list.style.display = "block";
-    if (sel) sel.classList.add("open");
+    ensurePickers();
+    if (mainPicker) mainPicker.open();
   };
 
   window.closeDropdown = function closeDropdown() {
-    const list = document.getElementById("dropdownList");
-    const sel = document.getElementById("dropdown-selected");
-    if (list) list.style.display = "none";
-    if (sel) sel.classList.remove("open");
+    if (mainPicker) mainPicker.close();
   };
 
   window.initModelDropdownUI = function initModelDropdownUI() {
@@ -229,29 +401,10 @@
       showControlsBar.style.display = window.isMobile() ? "" : "none";
     }
 
+    ensurePickers();
+    if (mainPicker) mainPicker.close();
+    if (titlePicker) titlePicker.close();
     window.loadModelDropdown();
-
-    const ddSelected = document.getElementById("dropdown-selected");
-    const ddList = document.getElementById("dropdownList");
-
-    if (ddSelected) {
-      ddSelected.onclick = function (e) {
-        e.stopPropagation();
-        const isOpen = ddList && ddList.style.display === "block";
-        if (isOpen) window.closeDropdown();
-        else window.openDropdown();
-      };
-    }
-
-    document.addEventListener("click", function () {
-      window.closeDropdown();
-    });
-
-    if (ddList) {
-      ddList.onclick = function (e) {
-        e.stopPropagation();
-      };
-    }
 
     [
       { id: "sortNameAsc", by: "name", dir: "asc" },
@@ -272,13 +425,13 @@
     fetch("/model/model_status", { credentials: "same-origin" })
       .then(res => res.json())
       .then(data => {
+        window.updateTitleModelStatus(data);
         if (!data || data.status !== "running") {
           const drawer = document.getElementById("modelDrawer");
           if (drawer && !drawer.classList.contains("open")) {
             drawer.classList.add("open");
 
-            if (ddList) ddList.style.display = "none";
-            if (ddSelected) ddSelected.classList.remove("open");
+            if (mainPicker) mainPicker.close();
 
             if (typeof window.updateChatForSidebar === "function") window.updateChatForSidebar();
 

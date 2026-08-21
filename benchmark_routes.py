@@ -196,11 +196,12 @@ def _get_registry_models_for_bench(include_disabled: bool = False):
     - present on disk
     - enabled (unless include_disabled=True)
     - allow_benchmark=1
+    - not marked as a projector file
     """
     db = mysql_conn()
     cur = db.cursor(dictionary=True)
     try:
-        where = ["is_present=1", "allow_benchmark=1"]
+        where = ["is_present=1", "allow_benchmark=1", "is_projector=0"]
         if not include_disabled:
             where.append("is_enabled=1")
 
@@ -607,7 +608,7 @@ def benchmark_worker(admin_user_id, profile_name, promptset_name, promptset_vers
 
     try:
 
-        # Source of truth: registry only (present + enabled + allow_benchmark=1).
+        # Source of truth: registry only (present + enabled + benchmarkable + not a projector).
         ggufs = _get_registry_models_for_bench(include_disabled=False)
 
         prof = get_profile(profile_name) or get_profile(CE_BENCHMARK_PROFILE_NAME)

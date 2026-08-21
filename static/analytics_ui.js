@@ -13,7 +13,11 @@
         "'": "&#39;"
       }[ch]));
     }
-  
+
+    function asArray(value) {
+      return Array.isArray(value) ? value : [];
+    }
+
     function fetchAnalytics() {
       const prefix = (typeof window.ANALYTICS_PREFIX === "string"
         ? window.ANALYTICS_PREFIX
@@ -22,21 +26,22 @@
         fetch(prefix, { cache: "no-store", credentials: "same-origin" })
         .then(response => response.json())
         .then(data => {
+          data = data && typeof data === "object" ? data : {};
           let models = {};
   
-          data.total_requests.forEach(item => {
+          asArray(data.total_requests).forEach(item => {
             let model = item.model || "Unknown";
             models[model] = models[model] || {};
             models[model].total_requests = item.total_requests;
           });
   
-          data.avg_response.forEach(item => {
+          asArray(data.avg_response).forEach(item => {
             let model = item.model || "Unknown";
             models[model] = models[model] || {};
             models[model].avg_response_time = window.formatTime(parseFloat(item.avg_response_time));
           });
   
-          data.tps_metrics.forEach(item => {
+          asArray(data.tps_metrics).forEach(item => {
             let model = item.model || "Unknown";
             models[model] = models[model] || {};
             const minTps = parseFloat(item.min_tps);
@@ -47,7 +52,7 @@
             models[model].avg_tps = isNaN(avgTps) ? "0" :  Math.floor(avgTps).toString();
           });
   
-          data.tokens_sum.forEach(item => {
+          asArray(data.tokens_sum).forEach(item => {
             let model = item.model || "Unknown";
             models[model] = models[model] || {};
             models[model].total_tokens = item.total_tokens;
@@ -109,7 +114,7 @@
           const dash = document.getElementById("analyticsDashboard");
           if (dash) dash.innerHTML = html;
   
-          window.sortTable('analyticsTable', 4, true, true);
+          if (document.getElementById("analyticsTable")) window.sortTable('analyticsTable', 4, true, true);
   
         })
         .catch(error => {

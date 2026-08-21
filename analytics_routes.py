@@ -173,7 +173,10 @@ def analytics():
     # Only real chat messages (skip session header rows)
     where_clause = """
         user_id=?
-        AND user_message IS NOT NULL AND TRIM(user_message) <> ''
+        AND (
+            (user_message IS NOT NULL AND TRIM(user_message) <> '')
+            OR (attachment_context IS NOT NULL AND TRIM(attachment_context) <> '')
+        )
         AND bot_response IS NOT NULL AND TRIM(bot_response) <> ''
         AND model_used IS NOT NULL AND TRIM(model_used) <> ''
     """
@@ -220,7 +223,7 @@ def analytics():
         "total_requests": total_requests,
         "avg_response": avg_response,
         "tps_metrics": tps_metrics,
-        "tokens_sum": tokens_sum
+        "tokens_sum": tokens_sum,
     })
 
 
@@ -370,7 +373,11 @@ def import_chats():
 
             user_message = row.get("user_message")
             bot_response = row.get("bot_response")
-            has_turn_content = bool((user_message or "").strip() or (bot_response or "").strip())
+            has_turn_content = bool(
+                (user_message or "").strip()
+                or (bot_response or "").strip()
+                or (attachment_context or "").strip()
+            )
             prompt_id = (row.get("prompt_id") or "").strip() or None
             if has_turn_content and not prompt_id:
                 prompt_id = str(uuid.uuid4())
@@ -451,31 +458,6 @@ def delete_all_chats():
     conn.commit()
     conn.close()
     return jsonify({"status": "success", "message": "All chats deleted"})
-
-
-@analytics_routes.route('/admin_chat_users', methods=['GET'])
-@login_required(roles=["admin"])
-def admin_chat_users():
-    # list users present in SQLite chat DB (fast + no MySQL dependency)
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("""
-        SELECT user_id,
-               COUNT(*) as row_count,
-               COUNT(DISTINCT session_id) as session_count,
-               MAX(timestamp) as last_ts
-          FROM chats
-      GROUP BY user_id
-      ORDER BY last_ts DESC
-    """)
-    users = [{
-        "user_id": row[0],
-        "rows": row[1],
-        "sessions": row[2],
-        "last_timestamp": row[3],
-    } for row in c.fetchall()]
-    conn.close()
-    return jsonify({"users": users})
 
 
 @analytics_routes.route('/admin_export_chats', methods=['GET'])

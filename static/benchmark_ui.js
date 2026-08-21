@@ -48,6 +48,39 @@
     });
   }
 
+  function detailAnchorToken(value, fallback = "item") {
+    const token = String(value ?? "").trim()
+      .replace(/[^A-Za-z0-9_-]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    return token || String(fallback);
+  }
+
+  function runDetailAnchorId(runId, part) {
+    return `bench-run-${detailAnchorToken(runId, "unknown")}-${detailAnchorToken(part)}`;
+  }
+
+  function renderRunDetailNavigation(runId, results) {
+    const nav = byId("benchDetailNav");
+    if (!nav) return;
+
+    const links = [`<a href="#${runDetailAnchorId(runId, "summary")}">Summary</a>`];
+    (Array.isArray(results) ? results : []).forEach((rp, index) => {
+      const promptNumber = index + 1;
+      const ordering = rp && rp.ordering !== undefined && rp.ordering !== null
+        ? rp.ordering
+        : promptNumber;
+      const promptKey = rp && rp.prompt_id !== undefined && rp.prompt_id !== null
+        ? rp.prompt_id
+        : ordering;
+      const anchorId = runDetailAnchorId(runId, `prompt-${promptKey}`);
+      const label = `Prompt ${promptNumber}`;
+      links.push(`<a href="#${anchorId}" title="${escapeHtml(label)}">${escapeHtml(label)}</a>`);
+    });
+
+    nav.innerHTML = links.join("");
+    nav.hidden = false;
+  }
+
   async function readJsonOrText(resp) {
     const text = await resp.text().catch(() => "");
     let j = null;
@@ -366,71 +399,6 @@
       .bench-reset-btn { opacity: 0.95; }
       .bench-present { text-align: center; font-weight: 700; }
   
-      .bench-details-render {
-        margin-top: 12px;
-        padding: 14px;
-        border: 1px solid rgba(255,255,255,0.12);
-        border-radius: 12px;
-        background: rgba(0,0,0,0.22);
-        min-height: 80px;
-      }
-      .bench-run-summary {
-        margin-bottom: 16px;
-        padding-bottom: 12px;
-        border-bottom: 1px solid rgba(255,255,255,0.10);
-      }
-      .bench-run-summary h4,
-      .bench-prompt-card h4 {
-        margin: 0 0 8px 0;
-      }
-      .bench-run-summary-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-        gap: 8px 16px;
-      }
-      .bench-run-summary-item {
-        opacity: 0.95;
-      }
-      .bench-run-summary-item b {
-        display: inline-block;
-        min-width: 88px;
-      }
-      .bench-prompt-card {
-        margin-top: 14px;
-        padding: 12px;
-        border: 1px solid rgba(255,255,255,0.10);
-        border-radius: 12px;
-        background: #525252;
-      }
-      .bench-prompt-meta {
-        margin-bottom: 10px;
-        opacity: 0.9;
-        font-size: 0.95em;
-      }
-      .bench-prompt-error {
-        margin-top: 10px;
-        color: #ff8f8f;
-        font-weight: 600;
-      }
-      .bench-response-bubble {
-        margin-top: 10px;
-        padding: 14px 16px;
-        border-radius: 16px;
-        background: rgb(117, 117, 117);
-        border: 1px solid rgba(255,255,255,0.08);
-        overflow-x: auto;
-      }
-      .bench-response-bubble pre {
-        white-space: pre-wrap;
-        word-break: break-word;
-      }
-      .bench-response-bubble code {
-        white-space: pre-wrap;
-        word-break: break-word;
-      }
-      .bench-empty-details {
-        opacity: 0.8;
-      }
     `;
     document.head.appendChild(style);
   }
@@ -742,7 +710,12 @@
   }
   async function loadRunDetails(runId) {
     const out = pickEl(["benchDetails", "benchRunDetails"]);
+    const nav = byId("benchDetailNav");
     if (out) out.innerHTML = `<div class="bench-empty-details">Loading run details...</div>`;
+    if (nav) {
+      nav.innerHTML = "";
+      nav.hidden = true;
+    }
   
     const r = await fetch(`${BENCH_PREFIX}/run/${runId}`, { method: "GET", credentials: "same-origin" });
     const j = await r.json().catch(() => ({}));
@@ -753,9 +726,11 @@
   
     const run = j.run || {};
     const results = j.results || [];
+    renderRunDetailNavigation(runId, results);
+    const summaryId = runDetailAnchorId(runId, "summary");
   
     const summaryHtml = `
-      <div class="bench-run-summary">
+      <div id="${summaryId}" class="bench-run-summary">
         <h4>Run #${escapeHtml(String(runId))}</h4>
         <div class="bench-run-summary-grid">
           <div class="bench-run-summary-item"><b>Model:</b> ${escapeHtml(run.model_name || "")}</div>
@@ -769,24 +744,32 @@
     `;
   
     const cardsHtml = results.length
-      ? results.map((rp) => {
+      ? results.map((rp, index) => {
           const ok = rp.success ? "✅ PASS" : "❌ FAIL";
           const tps = Math.round(safeNum(rp.eval_tps, 0));
           const gen = rp.tokens_generated || 0;
           const totalS = (safeNum(rp.total_ms, 0) / 1000).toFixed(2);
+          const promptKey = rp.prompt_id !== undefined && rp.prompt_id !== null
+            ? rp.prompt_id
+            : (rp.ordering || index + 1);
+          const promptAnchorId = runDetailAnchorId(runId, `prompt-${promptKey}`);
+          const promptNumber = index + 1;
   
           return `
-            <div class="bench-prompt-card">
-              <h4>#${escapeHtml(String(rp.ordering || ""))} ${escapeHtml(rp.category || "")}</h4>
+            <div id="${promptAnchorId}" class="bench-prompt-card">
+              <h4>Prompt ${promptNumber}</h4>
               <div class="bench-prompt-meta">
                 <div><b>Status:</b> ${ok}</div>
                 <div><b>Eval TPS:</b> ${escapeHtml(String(tps))}</div>
                 <div><b>Generated Tokens:</b> ${escapeHtml(String(gen))}</div>
                 <div><b>Total:</b> ${escapeHtml(String(totalS))}s</div>
               </div>
-              <div class="bench-response-bubble">
-                ${renderBenchmarkResponseHtml(rp.response_text || "")}
-              </div>
+              <details class="collapsible-section bench-response-disclosure" open>
+                <summary><span>Generated response</span></summary>
+                <div class="bench-response-bubble">
+                  ${renderBenchmarkResponseHtml(rp.response_text || "")}
+                </div>
+              </details>
               ${rp.error ? `<div class="bench-prompt-error">Error: ${escapeHtml(rp.error)}</div>` : ""}
             </div>
           `;

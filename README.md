@@ -40,6 +40,7 @@ It combines the operational side and the everyday usage side of local GGUF model
 - **Reasoning-Aware Responses**
 - **Managed Model Library**
 - **File-Aware Conversations**
+- **Controlled OpenAI-Compatible API Access**
 - **Benchmarks**
 - **Runtime Visibility**
 - **GPU Monitor**
@@ -62,12 +63,15 @@ When a model returns reasoning content, the interface can expose it with a dedic
 ![Reasoning Display](docs/images/thoughts-screenshot.png)
 
 ### Managed Model Library
-Scan a configured model directory for GGUF files, maintain a registry of available models, recognize complete split model sets, load and stop models, save runtime defaults, mark favorites, enable or disable entries, and control which models are allowed in benchmarks.
+Scan a configured model directory for GGUF files, maintain a registry of available models, recognize complete split model sets, load and stop models, save runtime defaults, mark favorites, enable or disable entries, and control which models are allowed in benchmarks. Administrators can also maintain compact usage profiles and notes, review each model's recorded Max TPS, configure an optional multimodal projector, and select an enabled model for chat-title generation.
 
 ![Model Library Drawer](docs/images/model-drawer.png)
 
-### File-Aware Conversations
-Attach supported text-based files directly to prompts. LLM Controller CE applies server-side limits, chunks supported text content, and adds attachment context to the model request.
+### File-Aware And Image-Aware Conversations
+Attach supported text files and PNG, JPEG, or WebP images through the file picker, drag-and-drop, or clipboard paste. Attachments remain associated with saved conversations and are validated against server-side count and size limits. Image understanding requires a compatible GGUF model, a compatible `llama-server` build, and a valid projector configured for the active model; text-only chat remains unchanged when no image is attached.
+
+### Controlled OpenAI-Compatible API Access
+Administrators can generate a single CE API key and explicitly enable an allowlisted API surface on the existing application server. It exposes only `GET /v1/models` and `POST /v1/chat/completions`, uses Bearer authentication, and serves only the active model. Streaming, non-streaming, and supported inline multimodal requests use the same private loopback `llama-server` runtime; model lifecycle and administrative routes are not exposed.
 
 ### Benchmarks
 Run administrator-controlled benchmarks across eligible models, edit the benchmark prompt set, review best-run summaries, move between summary and detailed saved outputs, and clearly distinguish current results from stale ones after prompt changes.
@@ -103,12 +107,13 @@ For people who care about local AI and controlling their own stack, this is the 
 
 ## Requirements
 
-LLM Controller CE expects a self-hosted environment with:
+LLM Controller CE v1.2 is developed and validated with Python 3.11.7 and MySQL 8.0.22. It expects a self-hosted environment with:
 
 - Python 3
 - MySQL
 - A working `llama-server` runtime compatible with the host OS and hardware
 - Local GGUF model files
+- For image understanding, a compatible multimodal model and projector (`mmproj`) file
 - A writable install folder
 - Local NVIDIA or AMD GPU telemetry tools where GPU visibility is expected
 

@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS `llm_benchmark_models` (
   `id` bigint UNSIGNED NOT NULL,
   `fingerprint` varchar(128) NOT NULL,
   `model_name` varchar(255) NOT NULL,
+  `friendly_name` varchar(255) DEFAULT NULL,
   `model_path` text NOT NULL,
   `file_size` bigint UNSIGNED NOT NULL,
   `mtime` bigint UNSIGNED NOT NULL,
@@ -56,8 +57,17 @@ CREATE TABLE IF NOT EXISTS `llm_benchmark_models` (
   `is_enabled` tinyint(1) NOT NULL DEFAULT '1',
   `is_favorite` tinyint(1) NOT NULL DEFAULT '0',
   `allow_benchmark` tinyint(1) NOT NULL DEFAULT '1',
+  `is_projector` TINYINT(1) NOT NULL DEFAULT 0,
   `is_present` tinyint(1) NOT NULL DEFAULT '1',
-  `notes` varchar(512) DEFAULT NULL
+  `notes` varchar(512) DEFAULT NULL,
+  `profile_general` tinyint(1) NOT NULL DEFAULT '0',
+  `profile_coding` tinyint(1) NOT NULL DEFAULT '0',
+  `profile_writing` tinyint(1) NOT NULL DEFAULT '0',
+  `profile_reasoning` tinyint(1) NOT NULL DEFAULT '0',
+  `profile_math` tinyint(1) NOT NULL DEFAULT '0',
+  `profile_agents` tinyint(1) NOT NULL DEFAULT '0',
+  `profile_images` tinyint(1) NOT NULL DEFAULT '0',
+  `mmproj_path` varchar(1024) DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- --------------------------------------------------------

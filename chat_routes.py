@@ -10,8 +10,16 @@ import uuid
 import os
 import re
 import model_routes
-from extensions import socketio
-from helpers import DB_PATH
+from attachment_utils import (
+    ATTACHMENT_ENVELOPE_MAX_FILES,
+    legacy_attachment_metadata,
+    normalize_browser_attachments,
+    normalize_openai_messages,
+    parse_attachment_context,
+    serialize_attachment_envelope,
+)
+from extensions import SOCKET_MAX_HTTP_BUFFER_BYTES, socketio
+from helpers import DB_PATH, record_request_event
 from app_settings import get_setting
 from auth import DEFAULT_SESSION_VERSION, _coerce_session_version, login_required, validate_session_user
 from db_mysql import mysql_conn
@@ -307,9 +315,8 @@ def _has_default_timestamp_title(title: str) -> bool:
 
 def auto_generate_chat_title(user_id: int, session_id: str):
     """
-    Classic behavior (like your old GPT-4 era version):
     - Generate title after the first assistant response is saved.
-    - Use title model first, fallback to the main model port.
+    - Use the runtime-selected title generation endpoint order.
     - Use a simple proven prompt.
     """
     conn = None
@@ -348,12 +355,12 @@ def auto_generate_chat_title(user_id: int, session_id: str):
             + first_response[:800]
         )
 
-        def call_title(port, retries=6, delay=0.5, timeout=30):
+        def call_title(completion_url, retries=6, delay=0.5, timeout=30):
             last_err = None
             for _ in range(retries):
                 try:
                     r = requests.post(
-                        f"http://127.0.0.1:{port}/v1/chat/completions",
+                        completion_url,
                         json={
                             "model": "llama",
                             "messages": [{"role": "user", "content": title_prompt}],
@@ -395,12 +402,11 @@ def auto_generate_chat_title(user_id: int, session_id: str):
                     time.sleep(delay)
             return None
 
-        title = call_title(model_routes.get_llama_title_port()) or call_title(
-            model_routes.get_llama_main_port(),
-            retries=2,
-            delay=0.3,
-            timeout=30,
-        )
+        title = None
+        for completion_url in model_routes.get_title_generation_completion_urls():
+            title = call_title(completion_url)
+            if title:
+                break
 
         if not title:
             print(f"[WARN] auto-title produced no title for user_id={user_id} session_id={session_id}")
@@ -430,17 +436,24 @@ def auto_generate_chat_title(user_id: int, session_id: str):
 active_generations = {}
 active_generations_lock = threading.Lock()
 
-SUPPORTED_ATTACHMENT_EXTENSIONS = {
-    ".txt", ".md", ".py", ".js", ".ts", ".html", ".css", ".json", ".xml",
-    ".yaml", ".yml", ".csv", ".log", ".ini", ".cfg", ".bat", ".ps1", ".sh",
-    ".sql", ".php", ".java", ".c", ".cpp", ".h", ".cs", ".go", ".rs",
-}
 MAX_ATTACHMENTS = 8
 MAX_ATTACHMENT_FILE_BYTES = 1048576
 MAX_ATTACHMENT_TOTAL_BYTES = 4194304
 ATTACHMENT_CHUNK_MAX_LINES = 200
 ATTACHMENT_CHUNK_OVERLAP_LINES = 20
 ATTACHMENT_CONTEXT_CHAR_LIMIT = 120000
+ATTACHMENT_TRANSPORT_RESERVE_BYTES = 512 * 1024
+ATTACHMENT_TRANSPORT_ENVELOPE_BYTES = max(
+    1,
+    SOCKET_MAX_HTTP_BUFFER_BYTES - ATTACHMENT_TRANSPORT_RESERVE_BYTES,
+)
+ATTACHMENT_TRANSPORT_RAW_BYTES = max(
+    1,
+    (ATTACHMENT_TRANSPORT_ENVELOPE_BYTES * 3) // 4,
+)
+ATTACHMENT_STORAGE_MAX_FILES = ATTACHMENT_ENVELOPE_MAX_FILES
+ATTACHMENT_STORAGE_MAX_FILE_BYTES = ATTACHMENT_TRANSPORT_RAW_BYTES
+ATTACHMENT_STORAGE_MAX_TOTAL_BYTES = ATTACHMENT_TRANSPORT_RAW_BYTES
 
 
 def _get_attachment_setting_int(key, default):
@@ -462,7 +475,10 @@ def _refresh_attachment_limits():
     global ATTACHMENT_CHUNK_MAX_LINES
     global ATTACHMENT_CHUNK_OVERLAP_LINES
 
-    MAX_ATTACHMENTS = max(1, _get_attachment_setting_int("llm.attachments.max_files", 8))
+    MAX_ATTACHMENTS = min(
+        ATTACHMENT_STORAGE_MAX_FILES,
+        max(1, _get_attachment_setting_int("llm.attachments.max_files", 8)),
+    )
     MAX_ATTACHMENT_FILE_BYTES = max(1, _get_attachment_setting_int("llm.attachments.max_file_bytes", 1048576))
     MAX_ATTACHMENT_TOTAL_BYTES = max(1, _get_attachment_setting_int("llm.attachments.max_total_bytes", 4194304))
     ATTACHMENT_CONTEXT_CHAR_LIMIT = max(1, _get_attachment_setting_int("llm.attachments.max_context_chars", 120000))
@@ -678,9 +694,12 @@ def _generation_auth_still_valid(state):
 def _history_rows_to_messages(history_rows):
     messages = []
     for row in history_rows:
-        if row[0]:
-            attachment_context = row[2] if len(row) > 2 else None
-            messages.append({"role": "user", "content": _compose_user_message(row[0], attachment_context)})
+        attachment_context = row[2] if len(row) > 2 else None
+        if row[0] or attachment_context:
+            messages.append({
+                "role": "user",
+                "content": _compose_model_user_content(row[0], attachment_context),
+            })
         if row[1]:
             messages.append({"role": "assistant", "content": row[1]})
     return messages
@@ -698,11 +717,68 @@ def _compose_user_message(user_message, attachment_context=None):
     return "\n\n".join(part for part in (base_message, attachment_block) if part)
 
 
-def _message_content_chars(messages):
-    return sum(len(str((message or {}).get("content") or "")) for message in (messages or []))
+def _parse_stored_attachment_context(attachment_context):
+    raw_context = str(attachment_context or "")
+    if len(raw_context.encode("utf-8", errors="replace")) > ATTACHMENT_TRANSPORT_ENVELOPE_BYTES:
+        raise ValueError("This chat's stored attachment data exceeds the supported format limit.")
+    return parse_attachment_context(
+        raw_context,
+        max_files=ATTACHMENT_STORAGE_MAX_FILES,
+        max_file_bytes=ATTACHMENT_STORAGE_MAX_FILE_BYTES,
+        max_total_bytes=ATTACHMENT_STORAGE_MAX_TOTAL_BYTES,
+    )
 
 
-def _compose_current_model_message(user_message, attachment_context=None):
+def _build_attachment_text_blocks(attachments, char_budget):
+    budget = max(0, int(char_budget))
+    used = 0
+    exhausted = False
+    blocks = {}
+    truncation_notice = (
+        "[Attachment context truncated: additional file content was omitted "
+        "to stay within the context limit.]"
+    )
+
+    for attachment_index, attachment in enumerate(attachments, start=1):
+        if attachment.get("kind") != "text" or exhausted:
+            continue
+
+        chunks = _chunk_attachment_text(attachment.get("content") or "")
+        total_chunks = len(chunks)
+        attachment_sections = []
+        for chunk_index, (line_start, line_end, chunk_text) in enumerate(chunks, start=1):
+            section = (
+                f"[Attached file: {attachment.get('name')}]\n"
+                f"[File type: {attachment.get('mime_type') or 'text/plain'}]\n"
+                f"[Attachment {attachment_index}/{len(attachments)}]\n"
+                f"[Chunk {chunk_index}/{total_chunks}]\n"
+                f"[Lines {line_start}-{line_end}]\n"
+                f"{chunk_text}"
+            ).strip()
+            separator_length = 2 if used else 0
+            available = max(0, budget - used - separator_length)
+            if len(section) <= available:
+                attachment_sections.append(section)
+                used += separator_length + len(section)
+                continue
+
+            if available:
+                if available > len(truncation_notice) + 2:
+                    prefix = section[:available - len(truncation_notice) - 2].rstrip()
+                    attachment_sections.append(f"{prefix}\n\n{truncation_notice}")
+                else:
+                    attachment_sections.append(truncation_notice[:available])
+                used = budget
+            exhausted = True
+            break
+
+        if attachment_sections:
+            blocks[attachment_index] = "\n\n".join(attachment_sections)
+
+    return blocks
+
+
+def _compose_legacy_user_message(user_message, attachment_context=None):
     composed = _compose_user_message(user_message, attachment_context)
     if len(composed) <= MAX_MODEL_CONTEXT_CHARS:
         return composed
@@ -723,28 +799,131 @@ def _compose_current_model_message(user_message, attachment_context=None):
     return composed[:MAX_MODEL_CONTEXT_CHARS]
 
 
+def _compose_model_user_content(user_message, attachment_context=None):
+    base_message = (user_message or "").strip()
+    if not attachment_context:
+        return base_message
+
+    parsed = _parse_stored_attachment_context(attachment_context)
+    if parsed["format"] == "legacy":
+        return _compose_legacy_user_message(base_message, parsed["legacy_context"])
+
+    attachments = parsed["attachments"]
+    if not attachments:
+        return base_message
+
+    attachment_intro = "Attached file context follows. Use it only when relevant to the user's request."
+    reserved_chars = len(base_message) + len(attachment_intro) + 4
+    text_budget = min(
+        ATTACHMENT_CONTEXT_CHAR_LIMIT,
+        max(0, MAX_MODEL_CONTEXT_CHARS - reserved_chars),
+    )
+    text_blocks = _build_attachment_text_blocks(attachments, text_budget)
+    has_images = any(item.get("kind") == "image" for item in attachments)
+
+    if not has_images:
+        attachment_text = "\n\n".join(
+            text_blocks[index]
+            for index in range(1, len(attachments) + 1)
+            if index in text_blocks
+        )
+        if not attachment_text:
+            attachment_text = MODEL_CONTEXT_TRUNCATION_NOTICE
+        return _compose_user_message(base_message, attachment_text)
+
+    content = []
+    introductory_text = "\n\n".join(part for part in (base_message, attachment_intro) if part)
+    if introductory_text:
+        content.append({"type": "text", "text": introductory_text})
+
+    for index, attachment in enumerate(attachments, start=1):
+        if attachment.get("kind") == "image":
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": attachment.get("data_url")},
+            })
+        elif index in text_blocks:
+            content.append({"type": "text", "text": text_blocks[index]})
+
+    return content
+
+
 def _build_limited_model_context(history_rows, user_message, attachment_context=None):
+    _refresh_attachment_limits()
     prior_rows = list(history_rows or [])[-max(0, MAX_CONTEXT_ACTIVE_TURNS - 1):]
     current_message = {
         "role": "user",
-        "content": _compose_current_model_message(user_message, attachment_context),
+        "content": _compose_model_user_content(user_message, attachment_context),
     }
 
+    current_image_count = 0
+    current_image_bytes = 0
+    current_max_image_bytes = 0
+    if attachment_context:
+        current_attachments = _parse_stored_attachment_context(attachment_context)["attachments"]
+        current_images = [item for item in current_attachments if item.get("kind") == "image"]
+        current_image_count = len(current_images)
+        current_image_bytes = sum(int(item.get("size") or 0) for item in current_images)
+        current_max_image_bytes = max(
+            (int(item.get("size") or 0) for item in current_images),
+            default=0,
+        )
+
+    max_request_images = min(
+        ATTACHMENT_STORAGE_MAX_FILES,
+        max(MAX_ATTACHMENTS, current_image_count),
+    )
+    max_request_image_bytes = min(
+        ATTACHMENT_STORAGE_MAX_FILE_BYTES,
+        max(MAX_ATTACHMENT_FILE_BYTES, current_max_image_bytes),
+    )
+    max_request_total_image_bytes = min(
+        ATTACHMENT_STORAGE_MAX_TOTAL_BYTES,
+        max(MAX_ATTACHMENT_TOTAL_BYTES, current_image_bytes),
+    )
+
+    bounded_prior_rows = []
+    aggregate_image_count = current_image_count
+    aggregate_image_bytes = current_image_bytes
+    for row in reversed(prior_rows):
+        try:
+            parsed = _parse_stored_attachment_context(row[2] if len(row) > 2 else None)
+        except ValueError:
+            break
+        row_images = [
+            item for item in parsed["attachments"]
+            if item.get("kind") == "image"
+        ]
+        row_image_count = len(row_images)
+        row_image_bytes = sum(int(item.get("size") or 0) for item in row_images)
+        if any(int(item.get("size") or 0) > max_request_image_bytes for item in row_images):
+            break
+        if aggregate_image_count + row_image_count > max_request_images:
+            break
+        if aggregate_image_bytes + row_image_bytes > max_request_total_image_bytes:
+            break
+        aggregate_image_count += row_image_count
+        aggregate_image_bytes += row_image_bytes
+        bounded_prior_rows.append(row)
+    prior_rows = list(reversed(bounded_prior_rows))
+
     while True:
-        messages = _history_rows_to_messages(prior_rows)
-        messages.append(current_message)
-        if _message_content_chars(messages) <= MAX_MODEL_CONTEXT_CHARS or not prior_rows:
-            return messages
-        prior_rows = prior_rows[1:]
-
-
-def _attachment_extension(filename):
-    return os.path.splitext((filename or "").strip().lower())[1]
-
-
-def _sanitize_attachment_name(filename):
-    safe_name = os.path.basename((filename or "").strip())
-    return safe_name[:255]
+        try:
+            messages = _history_rows_to_messages(prior_rows)
+            messages.append(current_message)
+            return normalize_openai_messages(
+                messages,
+                max_total_chars=MAX_MODEL_CONTEXT_CHARS,
+                max_image_bytes=max_request_image_bytes,
+                max_images=max_request_images,
+                max_total_image_bytes=max_request_total_image_bytes,
+            )
+        except ValueError as exc:
+            if not prior_rows:
+                raise ValueError(
+                    "The current message attachments exceed the safe model request limit."
+                ) from exc
+            prior_rows = prior_rows[1:]
 
 
 def _chunk_attachment_text(text):
@@ -770,99 +949,53 @@ def _chunk_attachment_text(text):
 
 
 def _build_attachment_context(raw_attachments):
-    attachments = raw_attachments or []
-    if not attachments:
-        return None
     _refresh_attachment_limits()
-    if not isinstance(attachments, list):
-        raise ValueError("Invalid attachment payload.")
-    if len(attachments) > MAX_ATTACHMENTS:
-        raise ValueError(f"You can attach up to {MAX_ATTACHMENTS} files per message.")
+    effective_total_limit = min(MAX_ATTACHMENT_TOTAL_BYTES, ATTACHMENT_TRANSPORT_RAW_BYTES)
+    effective_file_limit = min(MAX_ATTACHMENT_FILE_BYTES, effective_total_limit)
+    try:
+        normalized = normalize_browser_attachments(
+            raw_attachments,
+            max_files=MAX_ATTACHMENTS,
+            max_file_bytes=effective_file_limit,
+            max_total_bytes=effective_total_limit,
+        )
+    except ValueError as exc:
+        if (
+            (
+                effective_total_limit < MAX_ATTACHMENT_TOTAL_BYTES
+                and "Total attachment size exceeds" in str(exc)
+            )
+            or (
+                effective_file_limit < MAX_ATTACHMENT_FILE_BYTES
+                and "per-file attachment limit" in str(exc)
+            )
+        ):
+            raise ValueError(
+                "Total attachment size exceeds the browser transport-safe limit."
+            ) from exc
+        raise
 
-    total_bytes = 0
-    built_sections = []
-    truncated = False
-
-    for index, attachment in enumerate(attachments, start=1):
-        if not isinstance(attachment, dict):
-            raise ValueError("Invalid attachment payload.")
-
-        filename = _sanitize_attachment_name(attachment.get("name") or "")
-        if not filename:
-            raise ValueError("Each attachment needs a valid filename.")
-
-        extension = _attachment_extension(filename)
-        if extension not in SUPPORTED_ATTACHMENT_EXTENSIONS:
-            raise ValueError(f"Unsupported file type: {filename}")
-
-        content = attachment.get("content")
-        if not isinstance(content, str):
-            raise ValueError(f"Could not read {filename} as text.")
-        if not content:
-            raise ValueError(f"{filename} is empty.")
-        if "\x00" in content:
-            raise ValueError(f"{filename} looks like a binary file and can't be used here.")
-
-        declared_size = attachment.get("size")
-        try:
-            file_bytes = int(declared_size) if declared_size is not None else len(content.encode("utf-8"))
-        except Exception:
-            file_bytes = len(content.encode("utf-8"))
-
-        if file_bytes > MAX_ATTACHMENT_FILE_BYTES:
-            raise ValueError(f"{filename} exceeds the per-file limit of {MAX_ATTACHMENT_FILE_BYTES // 1024} KB.")
-
-        total_bytes += file_bytes
-        if total_bytes > MAX_ATTACHMENT_TOTAL_BYTES:
-            raise ValueError(f"Total attachment size exceeds the {MAX_ATTACHMENT_TOTAL_BYTES // (1024 * 1024)} MB limit.")
-
-        chunks = _chunk_attachment_text(content)
-        if not chunks:
-            raise ValueError(f"{filename} is empty.")
-
-        total_chunks = len(chunks)
-        for chunk_index, (line_start, line_end, chunk_text) in enumerate(chunks, start=1):
-            section = (
-                f"[Attached file: {filename}]\n"
-                f"[File type: {extension or 'text'}]\n"
-                f"[Attachment {index}/{len(attachments)}]\n"
-                f"[Chunk {chunk_index}/{total_chunks}]\n"
-                f"[Lines {line_start}-{line_end}]\n"
-                f"{chunk_text}"
-            ).strip()
-
-            projected_length = sum(len(part) for part in built_sections) + len(section) + 4
-            if projected_length > ATTACHMENT_CONTEXT_CHAR_LIMIT:
-                truncated = True
-                break
-
-            built_sections.append(section)
-
-        if truncated:
-            break
-
-    if not built_sections:
-        raise ValueError("Attachment content exceeded the safe context limit.")
-
-    if truncated:
-        built_sections.append("[Attachment context truncated: additional file content was omitted to stay within the context limit.]")
-
-    return "\n\n".join(built_sections)
+    envelope = serialize_attachment_envelope(normalized)
+    if len(envelope.encode("utf-8")) > ATTACHMENT_TRANSPORT_ENVELOPE_BYTES:
+        raise ValueError("Attachments are too large for safe browser transport.")
+    return envelope
 
 
-def _extract_attachment_display_names(attachment_context):
-    if not attachment_context or not isinstance(attachment_context, str):
-        return []
+def _attachment_response_items(attachment_context):
+    parsed = _parse_stored_attachment_context(attachment_context)
+    if parsed["format"] == "legacy":
+        return legacy_attachment_metadata(parsed["legacy_context"])
+    return parsed["attachments"]
 
-    seen = set()
-    names = []
-    for match in re.findall(r"^\[Attached file:\s*(.+?)\]$", attachment_context, flags=re.MULTILINE):
-        filename = _sanitize_attachment_name(match)
-        if not filename or filename in seen:
+
+def _messages_have_images(messages):
+    for message in messages or []:
+        content = (message or {}).get("content")
+        if not isinstance(content, list):
             continue
-        seen.add(filename)
-        names.append(filename)
-    return names
+        if any(isinstance(part, dict) and part.get("type") == "image_url" for part in content):
+            return True
+    return False
 
 
 def _emit_receive_message(user_room, session_id, message_id, **extra):
@@ -922,8 +1055,10 @@ def _get_latest_active_turn_row(cursor, user_id, session_id):
            AND session_id=?
            AND active_in_chat=1
            AND turn_id IS NOT NULL
-           AND user_message IS NOT NULL
-           AND TRIM(user_message) <> ''
+           AND (
+               (user_message IS NOT NULL AND TRIM(user_message) <> '')
+               OR (attachment_context IS NOT NULL AND TRIM(attachment_context) <> '')
+           )
       ORDER BY id DESC
          LIMIT 1
         """,
@@ -1199,6 +1334,23 @@ def _stream_chat_reply(
     source_prompt_id = (replace_prompt_id or "").strip() or None
     if source_prompt_id:
         stream_event_extra["source_prompt_id"] = source_prompt_id
+    has_images = _messages_have_images(messages)
+    has_attachment_context = bool(attachment_context)
+    preserve_failed_turn = bool(
+        replace_prompt_id or edit_prompt_id or has_images or has_attachment_context
+    )
+    if has_images and not bool(
+        (getattr(model_routes, "current_main_model_runtime", None) or {}).get("supports_images")
+    ):
+        _emit_chat_error(
+            user_room,
+            action,
+            "The active model does not support image attachments. Your message and attachments were kept so you can choose a vision-capable model.",
+            message_id=message_id,
+            reset_state=True,
+            session_id=session_id,
+        )
+        return
     if _is_benchmark_running():
         error_message = "Benchmark is currently running. Chat is temporarily unavailable until it finishes."
         _emit_chat_error(
@@ -1235,6 +1387,16 @@ def _stream_chat_reply(
         )
         return
 
+    request_event_started_at = None
+    request_event_http_status = None
+    request_event_status = "internal_error"
+    request_event_endpoint = {
+        "send": "socket:send_message",
+        "edit_prompt": "socket:edit_prompt",
+        "regenerate": "socket:regenerate_message",
+    }[action]
+    active_model = os.path.basename(str(model_routes.current_main_model_used or "")) or None
+
     try:
         buffer = ""
         reasoning = ""
@@ -1254,19 +1416,24 @@ def _stream_chat_reply(
         payload = {"model": "llama", "messages": messages, "stream": True}
 
         try:
+            request_event_started_at = time.monotonic()
             response = requests.post(
                 model_routes.get_llama_main_completion_url(),
                 json=payload,
                 stream=True,
                 timeout=600,
             )
+            request_event_http_status = response.status_code
             state["response"] = response
             if state["stop_event"].is_set():
                 state["stop_requested"] = True
                 _close_generation_response(response)
             elif response.status_code == 503:
+                request_event_status = "backend_error"
                 error_message = "Model unavailable (503). Please load a model first."
-                if replace_prompt_id or edit_prompt_id:
+                _close_generation_response(response)
+                state["response"] = None
+                if preserve_failed_turn:
                     _emit_chat_error(
                         user_room,
                         action,
@@ -1293,13 +1460,17 @@ def _stream_chat_reply(
             else:
                 response.raise_for_status()
         except requests.exceptions.HTTPError as e:
-            code = e.response.status_code if e.response else "??"
+            code = e.response.status_code if e.response is not None else None
+            request_event_http_status = code if isinstance(code, int) else request_event_http_status
+            request_event_status = "backend_error"
+            _close_generation_response(response or e.response)
+            state["response"] = None
             error_message = (
                 "Model unavailable (503). Please load a model first."
                 if code == 503 else
-                f"HTTP error {code}"
+                "The model backend rejected the request. Check that the active model and projector are compatible, then try again."
             )
-            if replace_prompt_id or edit_prompt_id:
+            if preserve_failed_turn:
                 _emit_chat_error(
                     user_room,
                     action,
@@ -1324,11 +1495,17 @@ def _stream_chat_reply(
                 )
             return
         except Exception as e:
-            error_message = str(e)
-            if "Failed to establish a new connection" in error_message or "Max retries exceeded" in error_message:
+            request_event_status = "backend_error"
+            _close_generation_response(response)
+            state["response"] = None
+            if isinstance(e, requests.exceptions.ConnectionError):
                 error_message = "No model loaded. Please load a model before chatting."
+            elif isinstance(e, requests.exceptions.Timeout):
+                error_message = "The model backend timed out before it could start a response."
+            else:
+                error_message = "The model backend could not start the request. Please check the active model configuration and try again."
 
-            if replace_prompt_id or edit_prompt_id:
+            if preserve_failed_turn:
                 _emit_chat_error(
                     user_room,
                     action,
@@ -1445,11 +1622,11 @@ def _stream_chat_reply(
 
             if state["stop_event"].is_set():
                 state["stop_requested"] = True
-        except Exception as e:
+        except Exception:
             if state["stop_event"].is_set():
                 state["stop_requested"] = True
             else:
-                stream_error = str(e)
+                stream_error = "The model backend interrupted the response. Please check the active model configuration and try again."
         finally:
             _close_generation_response(response)
             state["response"] = None
@@ -1462,10 +1639,12 @@ def _stream_chat_reply(
             prompt_eval_tps = round(prompt_tokens_count / prompt_elapsed, 2) if prompt_elapsed > 0 else 0
 
         if state.get("auth_invalidated") or not _generation_auth_still_valid(state):
+            request_event_status = "auth_invalidated"
             return
 
         if stream_error:
-            if replace_prompt_id or edit_prompt_id:
+            request_event_status = "stream_error"
+            if preserve_failed_turn:
                 _emit_chat_error(
                     user_room,
                     action,
@@ -1492,11 +1671,12 @@ def _stream_chat_reply(
             return
 
         if tokens_count == 0 and not state["stop_requested"]:
+            request_event_status = "empty_response"
             error_message = (
                 "Error: your input exceeded the model's context window. "
                 "Please shorten your prompt or trim previous messages."
             )
-            if replace_prompt_id or edit_prompt_id:
+            if preserve_failed_turn:
                 _emit_chat_error(
                     user_room,
                     action,
@@ -1521,21 +1701,6 @@ def _stream_chat_reply(
                 )
             return
 
-        _emit_receive_message(
-            user_room,
-            session_id,
-            message_id,
-            **stream_event_extra,
-            bot_response=final_answer.strip(),
-            thoughts=reasoning.strip(),
-            tps=overall_tps,
-            response_time=round(elapsed_time, 2),
-            total_tokens=tokens_count,
-            prompt_eval_tps=prompt_eval_tps,
-            streaming_done=True,
-            stopped=bool(state["stop_requested"]),
-        )
-
         skip_empty_stopped_write = (
             bool(state["stop_requested"]) and
             tokens_count == 0 and
@@ -1543,6 +1708,22 @@ def _stream_chat_reply(
             not reasoning.strip()
         )
         if skip_empty_stopped_write:
+            _emit_receive_message(
+                user_room,
+                session_id,
+                message_id,
+                **stream_event_extra,
+                bot_response=final_answer.strip(),
+                thoughts=reasoning.strip(),
+                tps=overall_tps,
+                response_time=round(elapsed_time, 2),
+                total_tokens=tokens_count,
+                prompt_eval_tps=prompt_eval_tps,
+                streaming_done=True,
+                stopped=True,
+                preserve_attachments=has_attachment_context,
+            )
+            request_event_status = "stopped"
             return
 
         saved_ok, first_user_message = _persist_chat_turn(
@@ -1561,16 +1742,33 @@ def _stream_chat_reply(
             attachment_context=attachment_context,
         )
         if not saved_ok:
+            request_event_status = "persistence_error"
             _emit_chat_error(
                 user_room,
                 action,
                 "Could not save the chat response.",
                 message_id=message_id,
-                reset_state=bool(replace_prompt_id or edit_prompt_id),
+                reset_state=True,
                 session_id=session_id,
             )
             return
 
+        _emit_receive_message(
+            user_room,
+            session_id,
+            message_id,
+            **stream_event_extra,
+            bot_response=final_answer.strip(),
+            thoughts=reasoning.strip(),
+            tps=overall_tps,
+            response_time=round(elapsed_time, 2),
+            total_tokens=tokens_count,
+            prompt_eval_tps=prompt_eval_tps,
+            streaming_done=True,
+            stopped=bool(state["stop_requested"]),
+        )
+
+        request_event_status = "stopped" if state["stop_requested"] else "completed"
         if first_user_message:
             threading.Thread(
                 target=auto_generate_chat_title,
@@ -1578,6 +1776,18 @@ def _stream_chat_reply(
                 daemon=True
             ).start()
     finally:
+        if request_event_started_at is not None:
+            record_request_event(
+                source="browser",
+                endpoint=request_event_endpoint,
+                status=request_event_status,
+                user_id=user_id,
+                requested_model=active_model,
+                active_model=active_model,
+                http_status=request_event_http_status,
+                duration=max(0, time.monotonic() - request_event_started_at),
+                streaming=True,
+            )
         _clear_active_generation(user_id, message_id)
 
 
@@ -1657,16 +1867,14 @@ def handle_message(data):
         return
 
     user_message = (data.get("message") or "").strip()
-    if not user_message:
-        return
-
     message_id = data.get("message_id") or data.get("prompt_id") or str(uuid.uuid4())
     edit_prompt_id = (data.get("edit_prompt_id") or "").strip() or None
+    action = "edit_prompt" if edit_prompt_id else "send"
     if len(user_message) > MAX_NEW_USER_MESSAGE_CHARS:
-        if edit_prompt_id:
+        if edit_prompt_id or bool(data.get("attachments")):
             _emit_chat_error(
                 user_room,
-                "edit_prompt",
+                action,
                 MESSAGE_TOO_LARGE_ERROR,
                 message_id=message_id,
                 reset_state=True,
@@ -1688,30 +1896,23 @@ def handle_message(data):
         return
 
     try:
-        incoming_attachment_context = _build_attachment_context(data.get("attachments"))
+        incoming_attachment_context = (
+            _build_attachment_context(data.get("attachments"))
+            if "attachments" in data
+            else None
+        )
     except ValueError as e:
-        if edit_prompt_id:
-            _emit_chat_error(
-                user_room,
-                "edit_prompt",
-                str(e),
-                message_id=message_id,
-                reset_state=True,
-                session_id=session_id,
-            )
-        else:
-            _emit_receive_message(
-                user_room,
-                session_id,
-                message_id,
-                bot_response=f"Error: {str(e)}",
-                thoughts="",
-                streaming_done=True,
-                tps=0,
-                response_time=0,
-                total_tokens=0,
-                prompt_eval_tps=0,
-            )
+        _emit_chat_error(
+            user_room,
+            action,
+            str(e),
+            message_id=message_id,
+            reset_state=True,
+            session_id=session_id,
+        )
+        return
+
+    if not edit_prompt_id and not user_message and not incoming_attachment_context:
         return
 
     conn = sqlite3.connect(DB_PATH)
@@ -1752,7 +1953,29 @@ def handle_message(data):
         history_rows = _get_active_history_rows(c, user_id, session_id)
     conn.close()
 
-    messages = _build_limited_model_context(history_rows, user_message, current_attachment_context)
+    if not user_message and not current_attachment_context:
+        _emit_chat_error(
+            user_room,
+            action,
+            "Enter a message or attach a file before sending.",
+            message_id=message_id,
+            reset_state=True,
+            session_id=session_id,
+        )
+        return
+
+    try:
+        messages = _build_limited_model_context(history_rows, user_message, current_attachment_context)
+    except ValueError as exc:
+        _emit_chat_error(
+            user_room,
+            action,
+            str(exc),
+            message_id=message_id,
+            reset_state=True,
+            session_id=session_id,
+        )
+        return
     _stream_chat_reply(
         user_id,
         session_id,
@@ -1812,7 +2035,9 @@ def handle_regenerate_message(data):
     target_row = _get_active_turn_row(c, user_id, session_id, source_prompt_id)
     latest_row = _get_latest_active_turn_row(c, user_id, session_id)
 
-    if not target_row or not (target_row[3] or "").strip() or not target_row[6]:
+    if not target_row or not target_row[6] or not (
+        (target_row[3] or "").strip() or (target_row[7] or "").strip()
+    ):
         conn.close()
         _emit_chat_error(
             user_room,
@@ -1841,7 +2066,18 @@ def handle_regenerate_message(data):
 
     user_message = (target_row[3] or "").strip()
     attachment_context = target_row[7]
-    messages = _build_limited_model_context(history_rows, user_message, attachment_context)
+    try:
+        messages = _build_limited_model_context(history_rows, user_message, attachment_context)
+    except ValueError as exc:
+        _emit_chat_error(
+            user_room,
+            "regenerate",
+            str(exc),
+            message_id=message_id,
+            reset_state=True,
+            session_id=session_id,
+        )
+        return
     _stream_chat_reply(
         user_id,
         session_id,
@@ -1900,6 +2136,13 @@ def get_chat(session_id):
 
     chat_history = []
     for row in active_rows:
+        attachment_error = None
+        try:
+            attachments = _attachment_response_items(row[16])
+        except ValueError as exc:
+            attachments = []
+            attachment_error = str(exc)
+
         entry = {
             "timestamp": row[1],
             "user_message": row[2],
@@ -1916,9 +2159,11 @@ def get_chat(session_id):
             "response_version": row[13],
             "active_in_chat": row[14],
             "source_row_id": row[15],
-            "attachment_names": _extract_attachment_display_names(row[16]),
+            "attachments": attachments,
             "is_latest_turn": bool(row[11] and row[11] == latest_turn_id),
         }
+        if attachment_error:
+            entry["attachment_error"] = attachment_error
         if entry["is_latest_turn"] and variant_nav:
             entry.update(variant_nav)
         chat_history.append(entry)
@@ -2049,7 +2294,6 @@ def rename_session():
     conn.close()
     return jsonify({"status":"renamed"})
 
-
 @chat_routes.route('/debug_llama_response', methods=['GET', 'POST'])
 @login_required()
 def debug_llama_response():
@@ -2086,6 +2330,3 @@ def debug_llama_response():
                 except json.JSONDecodeError:
                     continue
     return jsonify({"full_response": full_output})
-
-
-

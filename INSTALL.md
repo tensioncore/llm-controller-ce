@@ -1,8 +1,10 @@
 # LLM Controller CE - Installation Guide
 
-LLM Controller CE uses a first-run web installer. This guide gives one ordered Ubuntu/Linux fresh install flow from a new VM to a running service, plus Windows runtime notes.
+LLM Controller CE uses a first-run web installer. This guide gives one ordered Ubuntu/Linux fresh install flow from a new VM to a running service, an existing-install v1.2 upgrade path, and Windows runtime notes.
 
 ## Requirements
+
+LLM Controller CE v1.2 is developed and validated with Python 3.11.7 and MySQL 8.0.22.
 
 You will need:
 
@@ -23,7 +25,20 @@ A complete LLM Controller CE application folder should include:
 * `requirements.txt`
 * `install/schema.sql`
 * `install/seed.sql`
+* `install/upgrade_v1_2.sql` for an existing pre-v1.2 database
 * a local models folder such as `LLMs/`
+
+## Existing v1.1 Installation Upgrade To v1.2
+
+Fresh installations receive the v1.2 fields and settings through `install/schema.sql` and `install/seed.sql`; do not run the upgrade SQL on a fresh database. For an existing v1.1 installation, stop the application, back up MySQL and `chats.sqlite`, deploy the v1.2 application files, and then run the manual upgrade once with the configured MySQL account:
+
+```bash
+mysqldump -u llmcontroller -p llmcontroller > llmcontroller-before-v1.2.sql
+cp chats.sqlite chats-before-v1.2.sqlite
+mysql -u llmcontroller -p llmcontroller < install/upgrade_v1_2.sql
+```
+
+Review the database name, account, paths, and backup location for your installation before running these operator commands. The application does not run this upgrade automatically. The SQL is idempotent for the v1.2 columns/settings it adds. Restart the application only after the application files and database schema are both updated; the SQLite request-tracking table is created by the normal local SQLite initialization path at startup.
 
 ## Ubuntu/Linux Fresh Install
 
@@ -40,7 +55,7 @@ Follow these steps in order on a brand-new Ubuntu or cloud VM.
 ```bash
 sudo apt update
 sudo apt upgrade -y
-sudo apt install -y python3 python3-pip python3-venv python3.12-venv git curl wget unzip build-essential cmake pkg-config mysql-server mysql-client ufw
+sudo apt install -y python3 python3-pip python3-venv git curl wget unzip build-essential cmake pkg-config mysql-server mysql-client ufw
 ```
 
 ### 2. Configure Firewall For Direct Port 5000 Access
@@ -105,7 +120,7 @@ python3 -m venv venv
 If virtual environment creation fails on Ubuntu 24.04 with `ensurepip is not available`, install the matching venv package, then recreate the venv:
 
 ```bash
-sudo apt install -y python3.12-venv
+sudo apt install -y python3-venv
 python3 -m venv venv
 ```
 
@@ -115,7 +130,7 @@ Do not use `sudo pip`. If package installation fails because of permissions, fix
 sudo chown -R "$USER":"$USER" /srv/llmcontroller
 ```
 
-### 7. Download The Example GGUF Model
+### 7. Add A GGUF Model
 
 Small public example model:
 
@@ -123,7 +138,7 @@ Small public example model:
 * File: `DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf`
 * Download source: `https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-1.5B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf`
 
-Download it into the model folder. In LLM Controller CE v1.0, this exact GGUF model is required for background chat title generation, even if you use different models for normal conversations.
+This model is optional and is shown only as a small public example. LLM Controller CE uses the active main model for chat-title generation when the picker remains at **Select Title Generation Model**. An administrator can instead select any enabled, present managed model; a separate title runtime is used only when the existing lifecycle detects at least two GPUs and can host it, otherwise title generation falls back to the main model.
 
 ```bash
 cd /srv/llmcontroller/LLMs
@@ -135,6 +150,8 @@ For gated Hugging Face models, use your own token according to Hugging Face's do
 ### 8. Build Or Provide llama-server
 
 LLM Controller CE does not build `llama-server` for you. The `llama-server` binary must already work from the shell before you point LLM Controller CE at it.
+
+For image understanding, use a current compatible `llama-server` build that supports `--mmproj` and OpenAI-style `image_url` content containing inline data URLs. The model and projector must be a compatible pair. Check the upstream [server options and OpenAI-compatible endpoint documentation](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md) and [multimodal documentation](https://github.com/ggml-org/llama.cpp/blob/master/docs/multimodal.md) for the build you deploy. LLM Controller CE does not provide a projector, infer compatibility, generate images, perform OCR, or download remote image URLs.
 
 On Linux, `/srv/llama.cpp` is a convenient source/build folder:
 
@@ -181,21 +198,29 @@ MI300X is normally `gfx942`. Managed cloud GPU images often already include ROCm
 
 ### 9. Start The First-Run Installer Manually
 
+Untouched defaults bind the installer to loopback at `127.0.0.1:5000`. For a local installation using a browser on the same machine, keep those defaults.
+
+For remote installation, configure a bind address that the VM can listen on before starting the installer. Copy the example configuration:
+
+```bash
+cd /srv/llmcontroller
+cp bootstrap_config.example.json bootstrap_config.json
+```
+
+Then set:
+
+- `app_host` to a server listen address available on the VM, such as `0.0.0.0` or a VM interface address
+- `app_port` to `5000`
+- `cors-allowed-origins` to the actual browser-visible origin, including scheme, hostname or IP, and port (for example, `http://<VM_PUBLIC_IP>:5000`)
+
+`0.0.0.0` is a server listen value, not a browser origin; do not use it in `cors-allowed-origins`. Save the file before starting the application.
+
 ```bash
 cd /srv/llmcontroller
 ./venv/bin/python app.py
 ```
 
-For local setup, open http://127.0.0.1:5000/. For a remote cloud VM, open http://<VM_PUBLIC_IP>:5000/.
-
-**Note:** Depending on your network setup, if you cannot access the site after starting the application, you may need to manually update `bootstrap_config.json`.
-
-Copy `bootstrap_config.example.json` to `bootstrap_config.json`, then update:
-
-- `app_host` to the address you use to access LLM Controller (for example, your local IP, hostname, or public IP)
-- `cors-allowed-origins` to include the same address
-
-Save the file and restart the application.
+For local setup, open http://127.0.0.1:5000/. For a remote cloud VM configured as above, open the browser-visible origin you placed in `cors-allowed-origins`.
 
 ### 10. Complete Installer Step 1
 
@@ -218,13 +243,13 @@ For local-only browser use on the same machine, `127.0.0.1` is fine:
 * `app_port`: `5000`
 * CORS accepted origins: `http://127.0.0.1:5000`
 
-For remote browser access to a cloud VM, use the public IP or hostname, not `0.0.0.0`:
+For remote browser access to a cloud VM, keep the server listen address distinct from the browser-visible origin:
 
-* `app_host`: `<VM_PUBLIC_IP>`
+* `app_host`: a bindable server listen address such as `0.0.0.0` or a VM interface address
 * `app_port`: `5000`
 * CORS accepted origins: `http://<VM_PUBLIC_IP>:5000`
 
-CORS accepted origins must include scheme, host, and port. The installer page may load but form submission can fail with CORS if this is wrong.
+CORS accepted origins must use the actual address in the browser and include scheme, hostname or IP, and port. Do not use the listen value `0.0.0.0` as a CORS origin. The installer page may load but form submission can fail with CORS if this is wrong.
 
 Step 1 then:
 
@@ -250,6 +275,40 @@ Other runtime settings include:
 * GPU split threshold
 
 After installation completes, restart the app. On the next launch, LLM Controller CE starts in normal mode using your configured host and port.
+
+LLM Controller CE launches its managed main and title `llama-server` processes on `127.0.0.1`. Keep ports `8080` and `8081` (or your configured replacements) private; clients should use the authenticated application endpoint, not the raw runtime ports.
+
+#### Optional Title Generation Model
+
+Leave the Admin Settings picker at **Select Title Generation Model** to generate titles with the active main model. On a host where the existing runtime lifecycle detects at least two usable GPUs, an enabled and present managed model can instead be selected for the dedicated title port. After changing that selection, stop and reload the managed main model to start the selected dedicated runtime; main-model fallback remains active until the dedicated process is ready. Disabling, removing, or losing the selected model also falls back safely to the main model.
+
+#### Optional Image Understanding Setup
+
+In Admin Settings, rescan the Model Registry, mark Images only as operator-facing suitability metadata, and save the compatible projector filename for the model row. The projector file must already exist inside the configured model scan directory and must match the selected multimodal model. Stop and reload an already-running model after changing its projector configuration so the runtime starts with `--mmproj`. The runtime status, not the Images checkbox by itself, determines whether image requests are accepted.
+
+Supported browser image inputs are PNG, JPEG, and WebP. File picker, drag-and-drop, and clipboard files use the same configured attachment limits. Images are stored inline with the owning saved chat in local SQLite so saved previews reopen without a separate upload directory; deleting the chat deletes those records. This increases the size and sensitivity of `chats.sqlite` and chat-history exports, so protect both as content-bearing backups.
+
+#### Optional Controlled API Setup
+
+API access is disabled by default. In the compact API Access section of Admin Settings:
+
+1. Generate or regenerate the single API key.
+2. Copy the plaintext key immediately; it is not shown again and only its SHA-256 hash is stored.
+3. Enable API access and save settings.
+
+Regenerating invalidates the previous key. Revoking disables access and clears the stored hash. The API exposes only the active model through `GET /v1/models` and `POST /v1/chat/completions`; it does not start or switch models. Use the browser-visible LLM Controller CE host and port:
+
+```bash
+curl http://127.0.0.1:5000/v1/models \
+  -H "Authorization: Bearer <API_KEY>"
+
+curl http://127.0.0.1:5000/v1/chat/completions \
+  -H "Authorization: Bearer <API_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"<ACTIVE_MODEL_ID>","messages":[{"role":"user","content":"Hello"}],"stream":false}'
+```
+
+Use the exact model ID returned by `/v1/models`. Inline PNG, JPEG, and WebP data URLs are accepted only while the active runtime has a valid projector; remote image URLs are rejected. Request tracking stores operational metadata such as source, status, duration, and backend-provided usage only—not prompts, responses, images, API keys, or authorization headers.
 
 ### 12. Stop The Manual App Process
 
@@ -284,7 +343,7 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=/srv/llmcontroller
 Environment="PYTHONUNBUFFERED=1"
-ExecStart=/srv/llmcontroller/venv/bin/gunicorn --workers 1 --worker-class gthread --threads 4 --bind 0.0.0.0:5000 --access-logfile - --error-logfile - --capture-output --timeout 300 app:app
+ExecStart=/srv/llmcontroller/venv/bin/gunicorn --workers 1 --worker-class gevent --bind 0.0.0.0:5000 --access-logfile - --error-logfile - --capture-output --timeout 300 app:app
 Restart=always
 RestartSec=5
 KillSignal=SIGTERM
@@ -294,7 +353,7 @@ TimeoutStopSec=30
 WantedBy=multi-user.target
 ```
 
-The `--bind 0.0.0.0:5000` setting makes the service listen on all interfaces when firewall and network rules allow it. This is separate from the installer `app_host` value and CORS accepted origins, which should use the browser-visible host.
+The `--bind 0.0.0.0:5000` setting makes the service listen on all interfaces when firewall and network rules allow it. This server-listen value is separate from CORS accepted origins, which should use the browser-visible host.
 
 Enable and start the service:
 
@@ -334,10 +393,12 @@ Example:
 ```bash
 /srv/llama.cpp/build/bin/llama-server \
   -m /srv/llmcontroller/LLMs/DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf \
-  --host 0.0.0.0 \
+  --host 127.0.0.1 \
   --port 8080 \
   -ngl 999
 ```
+
+Stop the managed model first so the test port is free. For a compatible multimodal pair, add `--mmproj /path/to/projector.gguf`. Do not bind this troubleshooting runtime to a public interface.
 
 ## Windows Default Runtime Layout
 

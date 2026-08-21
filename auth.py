@@ -483,8 +483,7 @@ def login_required(roles=None, role=None):
 
 def _llm_users_columns(db):
     """
-    Returns a set of column names present on llm_users (lowercase).
-    Kept for compatibility, even if not currently needed.
+    Return the existing llm_users column names in lowercase for schema backfill.
     """
     cols = set()
     cur = None
@@ -633,29 +632,7 @@ def ensure_auth_schema_ready():
             except Exception:
                 pass
 
-# -------------------------------------------------------------------
-# NOTE:
-# is_active is now STRICTLY the account-enabled / (future) email-confirmed flag:
-#   1 = enabled/confirmed
-#   0 = disabled/unconfirmed
-# We DO NOT toggle is_active on login/logout anymore.
-# -------------------------------------------------------------------
-
-def _mark_user_online(db, user_id: int):
-    """
-    Compatibility stub.
-    We no longer use is_active to represent "online".
-    If you later add a proper field (e.g., last_seen, online, active_sessions),
-    wire it here.
-    """
-    return
-
-def _mark_user_offline(db, user_id: int):
-    """
-    Compatibility stub.
-    We no longer use is_active to represent "online".
-    """
-    return
+# is_active controls account access; login and logout do not change it.
 
 @auth.route('/api/me', methods=['GET'])
 @login_required()
@@ -1098,8 +1075,6 @@ def login():
                     db.commit()
                 except Exception as e:
                     print("Failed to update last_login:", e)
-
-                _mark_user_online(db, user['id'])
 
                 try:
                     cursor.execute(

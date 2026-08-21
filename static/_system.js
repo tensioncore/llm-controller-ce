@@ -13,11 +13,18 @@
   let smiAutoRefreshEnabled = false;
   let smiFetchController = null;
   let smiDrawerObserver = null;
-  let gpuMemoryChart = null;
-
   let _registryCache = [];
 
   const MODEL_PREFIX = window.MODEL_PREFIX || "/model";
+  const REGISTRY_PROFILE_FIELDS = [
+    ["profile_general", "General"],
+    ["profile_coding", "Coding"],
+    ["profile_writing", "Writing"],
+    ["profile_reasoning", "Reasoning"],
+    ["profile_math", "Math"],
+    ["profile_agents", "Agents"],
+    ["profile_images", "Images"]
+  ];
 
   const _escape = (typeof window.escapeHtml === "function")
     ? window.escapeHtml
@@ -82,7 +89,9 @@
   }
 
   function as01(v) {
-    return (v === 1) ? 1 : 0;
+    if (v === true || v === 1) return 1;
+    const normalized = String(v ?? "").trim().toLowerCase();
+    return (normalized === "1" || normalized === "true" || normalized === "yes") ? 1 : 0;
   }
 
   async function safeJson(res) {
@@ -906,17 +915,22 @@
   }
 
   function adminRegistryRowHtml(row) {
-    const id = row.id;
+    const id = Number(row.id);
     const name = String(row.model_name ?? "Unknown");
 
     const present = as01(row.is_present);
     const enabled = as01(row.is_enabled);
     const fav = as01(row.is_favorite);
     const bench = as01(row.allow_benchmark);
+    const projector = as01(row.is_projector);
 
     const sizeGb = _fmtBytesToGb(row.file_size);
     const mtime = _fmtMtime(row.mtime);
     const safeName = _escape(name);
+    const friendlyName = _escape(String(row.friendly_name || "").slice(0, 255));
+    const notes = _escape(String(row.notes || "").slice(0, 512));
+    const mmprojPath = _escape(String(row.mmproj_path || ""));
+    const maxTps = Number(row.max_tps);
 
     const GREEN = "#7CFC90";
     const YELLOW = "#f1c40f";
@@ -933,23 +947,29 @@
       enabledTitle = "Enabled";
     }
 
-    const enabledBadge = `
-      <span style="
-        color:${enabledColor};
-        font-weight:700;
-        font-size:2.5em;
-        line-height:1;
-        display:inline-block;
-      ">●</span>
-    `;
+    const enabledBadge = `<span class="admin-registry-state-dot" style="color:${enabledColor};">●</span>`;
+
+    const profileControls = REGISTRY_PROFILE_FIELDS.map(([field, label]) => `
+      <label class="registry-profile-toggle" title="${label} profile">
+        <input type="checkbox" data-metadata-field="${field}" ${as01(row[field]) ? "checked" : ""}>
+        <span>${label}</span>
+      </label>
+    `).join("");
 
     const favBadge = fav ? "⭐" : "☆";
-    const benchButtonHtml = enabled
+    const benchButtonHtml = projector
+      ? `
+          <button type="button" class="user-action-btn" disabled
+            title="MMPROJ files cannot be benchmarked">
+            Benchmark Disabled
+          </button>
+        `
+      : enabled
       ? `
           <button type="button" class="user-action-btn registry-btn"
             data-action="toggle" data-id="${id}" data-field="allow_benchmark" data-value="${bench ? 0 : 1}"
             title="${bench ? "Disable benchmarking for this model" : "Enable benchmarking for this model"}">
-            ${bench ? "🚫 Disable Bench" : "✅ Enable Bench"}
+            ${bench ? "Disable Bench" : "Enable Bench"}
           </button>
         `
       : `
@@ -961,22 +981,48 @@
         `;
 
     return `
-      <tr>
+      <tr data-registry-id="${id}">
         <td style="text-align:center;" title="${enabledTitle}">${enabledBadge}</td>
-        <td title="${safeName}">${safeName}</td>
-        <td style="text-align:right;">${sizeGb}</td>
-        <td style="text-align:right;">${mtime}</td>
-        <td style="white-space:nowrap; text-align:right;">
-          <button type="button" class="user-action-btn registry-btn"
-            data-action="toggle" data-id="${id}" data-field="is_enabled" data-value="${enabled ? 0 : 1}">
-            ${enabled ? "🚫 Disable" : "✅ Enable"}
-          </button>
+        <td>
+          <div class="admin-registry-model-name" title="${safeName}">
+            <span class="admin-registry-model-filename">${safeName}</span>
+            <div class="admin-registry-profiles" aria-label="Model profiles">${profileControls}</div>
+          </div>
+          <div class="admin-registry-metadata-row">
+            <label class="registry-profile-toggle registry-projector-state-toggle" title="Treat this registry row as an MMPROJ projector file">
+              <input type="checkbox" class="registry-projector-toggle" data-id="${id}" ${projector ? "checked" : ""}>
+              <span>MMPROJ File</span>
+            </label>
+            <label class="registry-inline-field registry-friendly-name-field">
+              <span>Friendly Name</span>
+              <input type="text" data-metadata-field="friendly_name" value="${friendlyName}" maxlength="255" placeholder="Optional display title">
+            </label>
+            <label class="registry-inline-field registry-projector-field">
+              <span>Projector file</span>
+              <input type="text" data-metadata-field="mmproj_path" value="${mmprojPath}" maxlength="1024" placeholder="filename.gguf" title="Filename in the configured Models directory">
+            </label>
+            <label class="registry-inline-field registry-notes-field">
+              <span>Notes</span>
+              <input type="text" data-metadata-field="notes" value="${notes}" maxlength="512" placeholder="Short operator note">
+            </label>
+          </div>
+        </td>
+        <td class="admin-registry-tps-cell">${Number.isFinite(maxTps) && maxTps > 0 ? `<span class="model-tps is-measured">Max ${Math.round(maxTps)} TPS</span>` : `<span class="model-tps is-missing">—</span>`}</td>
+        <td class="admin-registry-file-cell"><strong>${sizeGb} GB</strong><span>${mtime}</span></td>
+        <td class="admin-registry-actions-cell">
+          ${projector
+            ? `<button type="button" class="user-action-btn" disabled title="MMPROJ files cannot be enabled">Projector</button>`
+            : `<button type="button" class="user-action-btn registry-btn"
+                data-action="toggle" data-id="${id}" data-field="is_enabled" data-value="${enabled ? 0 : 1}">
+                ${enabled ? "Disable" : "Enable"}
+              </button>`}
           <button type="button" class="user-action-btn registry-btn"
             data-action="toggle" data-id="${id}" data-field="is_favorite" data-value="${fav ? 0 : 1}"
             title="Favorite">
             ${favBadge}
           </button>
           ${benchButtonHtml}
+          <button type="button" class="user-action-btn registry-metadata-save" data-id="${id}">Save Metadata</button>
         </td>
       </tr>
     `;
@@ -987,7 +1033,7 @@
     if (!tbody) return;
 
     if (!Array.isArray(list) || list.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="6">No models found.</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="5">No models found.</td></tr>`;
       return;
     }
 
@@ -1001,7 +1047,7 @@
   }
 
   async function adminRegistryToggleById(id, field, value01) {
-    if (id === undefined || id === null || id === "" || !field) return;
+    if (id === undefined || id === null || id === "" || !field) return false;
 
     const v = (Number(value01) === 1) ? 1 : 0;
 
@@ -1026,16 +1072,72 @@
     const data = await safeJson(res);
     if (!res.ok || !data) {
       setRegistryStatus(`Toggle failed: HTTP ${res.status}`, false);
-      return;
+      return false;
     }
     if (data.status !== "success") {
       setRegistryStatus("Toggle failed: " + (data.message || "Unknown error"), false);
-      return;
+      return false;
     }
 
     await adminRegistryRefresh();
     if (typeof window.loadModelDropdown === "function") window.loadModelDropdown();
     setRegistryStatus("Updated.", true);
+    return true;
+  }
+
+  async function adminRegistrySaveMetadata(rowElement) {
+    if (!rowElement) return;
+    const id = Number(rowElement.dataset.registryId);
+    if (!Number.isFinite(id)) return;
+
+    const field = (name) => rowElement.querySelector(`[data-metadata-field="${name}"]`);
+    const friendlyName = String(field("friendly_name")?.value || "").trim();
+    if (friendlyName.length > 255) {
+      setRegistryStatus("Friendly Name must be 255 characters or fewer.", false);
+      return;
+    }
+    const notes = String(field("notes")?.value || "").trim();
+    if (notes.length > 512) {
+      setRegistryStatus("Notes must be 512 characters or fewer.", false);
+      return;
+    }
+
+    const payload = {
+      id,
+      friendly_name: friendlyName,
+      notes,
+      mmproj_path: String(field("mmproj_path")?.value || "").trim()
+    };
+    REGISTRY_PROFILE_FIELDS.forEach(([name]) => {
+      payload[name] = Boolean(field(name)?.checked);
+    });
+
+    const saveButton = rowElement.querySelector(".registry-metadata-save");
+    if (saveButton) saveButton.disabled = true;
+    setRegistryStatus("Saving model metadata…", null);
+
+    try {
+      const res = await fetch(`${MODEL_PREFIX}/registry/metadata`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRFToken": window.CSRF_TOKEN
+        },
+        credentials: "same-origin",
+        body: JSON.stringify(payload)
+      });
+      const data = await safeJson(res);
+      if (!res.ok || !data || data.status !== "success") {
+        throw new Error((data && (data.message || data.error)) || `HTTP ${res.status}`);
+      }
+
+      await adminRegistryRefresh();
+      if (typeof window.loadModelDropdown === "function") await window.loadModelDropdown();
+      setRegistryStatus("Model metadata saved.", true);
+    } catch (error) {
+      setRegistryStatus(`Metadata save failed: ${error?.message || error}`, false);
+      if (saveButton) saveButton.disabled = false;
+    }
   }
 
   async function adminRegistrySetAllEnabled(enable) {
@@ -1048,7 +1150,7 @@
     if (list2.length === 0) return;
 
     const target = enable ? 1 : 0;
-    const toChange = list2.filter(r => as01(r.is_enabled) !== target);
+    const toChange = list2.filter(r => (!enable || !as01(r.is_projector)) && as01(r.is_enabled) !== target);
 
     if (toChange.length === 0) {
       setRegistryStatus(enable ? "All models already enabled." : "All models already disabled.", true);
@@ -1086,7 +1188,29 @@
 
     if (tbody && !tbody._wired) {
       tbody._wired = true;
+      tbody.addEventListener("change", (e) => {
+        const toggle = e.target?.closest?.(".registry-projector-toggle");
+        if (!toggle) return;
+
+        toggle.disabled = true;
+        const requestedState = toggle.checked;
+        adminRegistryToggleById(toggle.getAttribute("data-id"), "is_projector", requestedState ? 1 : 0)
+          .then((updated) => {
+            if (!updated && toggle.isConnected) toggle.checked = !requestedState;
+          })
+          .catch((error) => {
+            if (toggle.isConnected) toggle.checked = !requestedState;
+            setRegistryStatus(`Toggle failed: ${error?.message || error}`, false);
+          })
+          .finally(() => { toggle.disabled = false; });
+      });
       tbody.addEventListener("click", (e) => {
+        const metadataButton = e.target?.closest?.(".registry-metadata-save");
+        if (metadataButton) {
+          e.preventDefault();
+          adminRegistrySaveMetadata(metadataButton.closest("tr[data-registry-id]"));
+          return;
+        }
         const btn = e.target?.closest?.(".registry-btn");
         if (!btn) return;
         e.preventDefault();

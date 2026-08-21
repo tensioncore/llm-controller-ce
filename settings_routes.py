@@ -1,5 +1,7 @@
 import os
 import json
+import hashlib
+import secrets
 from datetime import datetime
 from flask import Blueprint, request, jsonify, session, g, Response, current_app
 from flask_wtf.csrf import validate_csrf, CSRFError
@@ -39,6 +41,7 @@ PASSWORD_POLICIES = {
 
 MAX_ATTACHMENT_TRANSPORT_BYTES = SOCKET_MAX_HTTP_BUFFER_BYTES
 SMTP_PASSWORD_MASK = "********"
+API_KEY_SETTING = "llm.api.key_hash"
 
 AUTH_SETTING_DEFAULTS = [
     ("auth.email_confirm_token_ttl_minutes", "1440", "int", "Email confirmation token lifetime in minutes"),
@@ -101,6 +104,73 @@ def _clamp_attachment_transport_limit(value):
     if value is None:
         return None
     return min(int(value), MAX_ATTACHMENT_TRANSPORT_BYTES)
+
+
+def _parse_bool_payload(value):
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in ("1", "true", "yes", "on"):
+        return True
+    if normalized in ("0", "false", "no", "off"):
+        return False
+    raise ValueError("Must be true or false")
+
+
+def _validate_admin_csrf():
+    try:
+        body = request.get_json(silent=True) if request.is_json else None
+        csrf_token = (
+            request.headers.get("X-CSRFToken")
+            or (body or {}).get("csrf_token")
+            or request.form.get("csrf_token")
+        )
+        validate_csrf(csrf_token)
+    except CSRFError as error:
+        return jsonify(_csrf_failure_payload(error)), 400
+    return None
+
+
+def _api_access_status():
+    enabled = bool(_get_db_setting("llm.api.enabled", cast=bool))
+    configured = bool(str(_get_db_setting(API_KEY_SETTING) or "").strip())
+    return {
+        "enabled": enabled,
+        "key_configured": configured,
+        "active": enabled and configured,
+    }
+
+
+def _validate_title_model_selection(model_path):
+    selected = str(model_path or "").strip().replace("\\", "/")
+    if not selected:
+        return "", None
+    if len(selected) > 4096 or "\x00" in selected or "\n" in selected or "\r" in selected:
+        return "", "Select an enabled model from the managed model registry."
+
+    db = get_db()
+    if not db:
+        raise RuntimeError("Database connection error")
+    cursor = db.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            """
+            SELECT model_path
+              FROM llm_benchmark_models
+             WHERE model_path=%s
+               AND is_enabled=1
+               AND is_present=1
+               AND is_projector=0
+             LIMIT 1
+            """,
+            (selected,),
+        )
+        row = cursor.fetchone()
+    finally:
+        cursor.close()
+    if not row:
+        return "", "Select an enabled model that is present in the managed model registry."
+    return str(row.get("model_path") or "").strip().replace("\\", "/"), None
 
 
 def ensure_auth_settings_seeded():
@@ -287,9 +357,14 @@ def validate_settings_payload(data):
         if raw_base_url and not normalize_auth_public_base_url(raw_base_url):
             errors["auth_public_base_url"] = "Must be a valid http(s) URL without username, password, query, or fragment"
 
-    for field in ("auth_smtp_enabled", "auth_smtp_use_tls"):
+    for field in ("auth_smtp_enabled", "auth_smtp_use_tls", "api_enabled"):
         if field in data and str(data.get(field)).lower() not in ("true", "false", "1", "0", "on", "off"):
             errors[field] = "Must be true or false"
+
+    if "title_model_path" in data:
+        title_model_path = data.get("title_model_path")
+        if title_model_path is not None and not isinstance(title_model_path, str):
+            errors["title_model_path"] = "Must be a model selected from the registry"
 
     return errors
 
@@ -469,11 +544,36 @@ def change_password():
 @settings_routes.route('/get_settings', methods=['GET'])
 @login_required()
 def get_settings():
+    version = _get_db_setting("app.version")
+    attachments_max_files = _get_db_int_setting("llm.attachments.max_files", minimum=1)
+    attachments_max_file_bytes = _clamp_attachment_transport_limit(
+        _get_db_int_setting("llm.attachments.max_file_bytes", minimum=1)
+    )
+    attachments_max_total_bytes = _clamp_attachment_transport_limit(
+        _get_db_int_setting("llm.attachments.max_total_bytes", minimum=1)
+    )
+    policy = get_password_policy()
+    payload = {
+        "version": version,
+        "attachments_max_files": attachments_max_files,
+        "attachments_max_file_bytes": attachments_max_file_bytes,
+        "attachments_max_total_bytes": attachments_max_total_bytes,
+        "password_policy": {
+            "level": policy["level"],
+            "min_length": policy["min_length"],
+            "require_upper": policy["require_upper"],
+            "require_lower": policy["require_lower"],
+            "require_digit": policy["require_digit"],
+            "require_special": policy["require_special"],
+        }
+    }
+
+    if session.get("role") != "admin":
+        return jsonify(payload)
+
     ensure_auth_settings_seeded()
     bootstrap_config = _get_current_bootstrap_config()
-
     scan_directory = _get_db_setting("llm.scan_directory")
-    version = _get_db_setting("app.version")
     llama_server_path = _get_db_setting("llm.llama_server_path")
     llama_main_port = _get_db_int_setting("llama.main.port", minimum=1)
     llama_title_port = _get_db_int_setting("llama.title.port", minimum=1)
@@ -485,18 +585,9 @@ def get_settings():
     top_p = _get_db_setting("llm.defaults.top_p", cast=float)
     repeat_penalty = _get_db_setting("llm.defaults.repeat_penalty", cast=float)
     seed = _get_db_int_setting("llm.defaults.seed", minimum=0)
-    attachments_max_files = _get_db_int_setting("llm.attachments.max_files", minimum=1)
-    attachments_max_file_bytes = _clamp_attachment_transport_limit(
-        _get_db_int_setting("llm.attachments.max_file_bytes", minimum=1)
-    )
-    attachments_max_total_bytes = _clamp_attachment_transport_limit(
-        _get_db_int_setting("llm.attachments.max_total_bytes", minimum=1)
-    )
     attachments_max_context_chars = _get_db_int_setting("llm.attachments.max_context_chars", minimum=1)
     attachments_chunk_max_lines = _get_db_int_setting("llm.attachments.chunk_max_lines", minimum=1)
     attachments_chunk_overlap_lines = _get_db_int_setting("llm.attachments.chunk_overlap_lines", minimum=0)
-
-    policy = get_password_policy()
     auth_smtp_enabled = bool(_get_db_setting("auth.smtp.enabled", cast=bool))
     auth_smtp_host = str(_get_db_setting("auth.smtp.host") or "")
     auth_smtp_port = _get_db_int_setting("auth.smtp.port", minimum=1) or 587
@@ -513,11 +604,10 @@ def get_settings():
     auth_public_base_url_missing = not normalized_auth_public_base_url
     auth_email_ready = not auth_smtp_missing and not auth_public_base_url_missing
 
-    payload = {
+    payload.update({
         "db_host": bootstrap_config.get("db_host", DEFAULT_BOOTSTRAP_CONFIG["db_host"]),
         "db_port": bootstrap_config.get("db_port", DEFAULT_BOOTSTRAP_CONFIG["db_port"]),
         "scan_directory": scan_directory,
-        "version": version,
         "llama_server_path": llama_server_path,
         "llama_main_port": llama_main_port,
         "llama_title_port": llama_title_port,
@@ -529,24 +619,12 @@ def get_settings():
         "top_p": top_p,
         "repeat_penalty": repeat_penalty,
         "seed": seed,
-        "attachments_max_files": attachments_max_files,
-        "attachments_max_file_bytes": attachments_max_file_bytes,
-        "attachments_max_total_bytes": attachments_max_total_bytes,
         "attachments_max_context_chars": attachments_max_context_chars,
         "attachments_chunk_max_lines": attachments_chunk_max_lines,
         "attachments_chunk_overlap_lines": attachments_chunk_overlap_lines,
-        "password_policy": {
-            "level": policy["level"],
-            "min_length": policy["min_length"],
-            "require_upper": policy["require_upper"],
-            "require_lower": policy["require_lower"],
-            "require_digit": policy["require_digit"],
-            "require_special": policy["require_special"],
-        }
-    }
-
-    if session.get("role") == "admin":
-        payload["auth"] = {
+        "title_model_path": str(_get_db_setting("llm.title_model_path") or ""),
+        "api": _api_access_status(),
+        "auth": {
             "email_confirmation_ready": auth_email_ready,
             "forgot_password_ready": auth_email_ready,
             "smtp_enabled": auth_smtp_enabled,
@@ -567,7 +645,8 @@ def get_settings():
                 "Valid public base URL is required before auth email links can be sent."
                 if auth_public_base_url_missing else ""
             ),
-        }
+        },
+    })
 
     return jsonify(payload)
 
@@ -579,6 +658,10 @@ def export_backup():
         rows = get_all_settings_rows()
         if not isinstance(rows, list):
             raise RuntimeError("Invalid settings export payload")
+        rows = [
+            row for row in rows
+            if str(row.get("key") or "") != API_KEY_SETTING
+        ]
         for row in rows:
             if str(row.get("key") or "") == "auth.smtp.password" and row.get("value"):
                 row["value"] = SMTP_PASSWORD_MASK
@@ -608,19 +691,40 @@ def export_backup():
 @settings_routes.route('/update_settings', methods=['POST'])
 @login_required(role='admin')
 def update_settings():
-    try:
-        csrf_token = request.headers.get('X-CSRFToken') or (request.json or {}).get('csrf_token') or request.form.get('csrf_token')
-        validate_csrf(csrf_token)
-    except CSRFError as e:
-        return jsonify(_csrf_failure_payload(e)), 400
+    csrf_error = _validate_admin_csrf()
+    if csrf_error:
+        return csrf_error
 
     ensure_auth_settings_seeded()
-    data = request.get_json() if request.is_json else request.form.to_dict()
+    data = (request.get_json(silent=True) if request.is_json else request.form.to_dict()) or {}
     errors = validate_settings_payload(data)
     if errors:
         return jsonify({"status": "error", "errors": errors}), 400
 
     uid = session.get("user_id")
+
+    title_model_path_value = None
+    if "title_model_path" in data:
+        try:
+            title_model_path_value, title_model_error = _validate_title_model_selection(
+                data.get("title_model_path")
+            )
+        except RuntimeError as error:
+            return jsonify({"status": "error", "error": str(error)}), 500
+        if title_model_error:
+            return jsonify({"status": "error", "errors": {"title_model_path": title_model_error}}), 400
+
+    api_enabled_value = None
+    if "api_enabled" in data:
+        try:
+            api_enabled_value = _parse_bool_payload(data.get("api_enabled"))
+        except ValueError as error:
+            return jsonify({"status": "error", "errors": {"api_enabled": str(error)}}), 400
+        if api_enabled_value and not str(_get_db_setting(API_KEY_SETTING) or "").strip():
+            return jsonify({
+                "status": "error",
+                "errors": {"api_enabled": "Generate an API key before enabling API access."},
+            }), 400
 
     def _payload_or_current(field, key, minimum):
         raw = data.get(field)
@@ -724,6 +828,10 @@ def update_settings():
     set_setting("llm.attachments.max_context_chars", int(attachments_max_context_chars), "int", updated_by_user_id=uid)
     set_setting("llm.attachments.chunk_max_lines", int(attachments_chunk_max_lines), "int", updated_by_user_id=uid)
     set_setting("llm.attachments.chunk_overlap_lines", int(attachments_chunk_overlap_lines), "int", updated_by_user_id=uid)
+    if title_model_path_value is not None:
+        set_setting("llm.title_model_path", title_model_path_value, "string", updated_by_user_id=uid)
+    if api_enabled_value is not None:
+        set_setting("llm.api.enabled", api_enabled_value, "bool", updated_by_user_id=uid)
     if "auth_smtp_enabled" in data:
         set_setting("auth.smtp.enabled", data.get("auth_smtp_enabled", "false"), "bool", updated_by_user_id=uid)
     if "auth_smtp_host" in data:
@@ -755,6 +863,53 @@ def update_settings():
     _sync_runtime_bootstrap_config(saved_bootstrap_config)
 
     return jsonify({"status": "success"})
+
+
+@settings_routes.route('/api_key/regenerate', methods=['POST'])
+@login_required(role='admin')
+def regenerate_api_key():
+    csrf_error = _validate_admin_csrf()
+    if csrf_error:
+        return csrf_error
+
+    api_key = "llmc_" + secrets.token_urlsafe(32)
+    key_hash = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
+    try:
+        set_setting(
+            API_KEY_SETTING,
+            key_hash,
+            "string",
+            updated_by_user_id=session.get("user_id"),
+        )
+        status = _api_access_status()
+    except Exception:
+        current_app.logger.exception("API key regeneration failed internally.")
+        return jsonify({"status": "error", "error": "Unable to generate the API key."}), 500
+
+    response = jsonify({"status": "success", "api_key": api_key, "api": status})
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    return response
+
+
+@settings_routes.route('/api_key/revoke', methods=['POST'])
+@login_required(role='admin')
+def revoke_api_key():
+    csrf_error = _validate_admin_csrf()
+    if csrf_error:
+        return csrf_error
+
+    try:
+        uid = session.get("user_id")
+        set_setting("llm.api.enabled", False, "bool", updated_by_user_id=uid)
+        set_setting(API_KEY_SETTING, "", "string", updated_by_user_id=uid)
+    except Exception:
+        current_app.logger.exception("API key revocation failed internally.")
+        return jsonify({"status": "error", "error": "Unable to revoke the API key."}), 500
+
+    response = jsonify({"status": "success", "api": _api_access_status()})
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @settings_routes.route('/update_password_policy', methods=['POST'])

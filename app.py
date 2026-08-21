@@ -105,6 +105,7 @@ def _configure_normal_mode(app: Flask):
     from app_settings import get_setting
     from admin_routes import admin
     from analytics_routes import analytics_routes
+    from api_routes import api_routes
     from auth import auth, ensure_auth_schema_ready, login_required
     from benchmark_routes import benchmark_routes
     from chat_routes import chat_routes
@@ -120,6 +121,7 @@ def _configure_normal_mode(app: Flask):
     )
 
     csrf = CSRFProtect(app)
+    csrf.exempt(api_routes)
 
     _init_socketio(app)
 
@@ -127,6 +129,7 @@ def _configure_normal_mode(app: Flask):
     app.register_blueprint(model_routes, url_prefix="/model")
     app.register_blueprint(settings_routes, url_prefix="/settings")
     app.register_blueprint(analytics_routes, url_prefix="/analytics")
+    app.register_blueprint(api_routes)
     app.register_blueprint(auth)
     app.register_blueprint(admin)
     app.register_blueprint(benchmark_routes, url_prefix="/benchmark")
@@ -165,7 +168,7 @@ def _request_wants_json():
     return (
         request.is_json
         or request.accept_mimetypes.best == "application/json"
-        or path.startswith(('/api/', '/chat/', '/model/', '/settings/', '/analytics/', '/benchmark/'))
+        or path.startswith(('/api/', '/v1/', '/chat/', '/model/', '/settings/', '/analytics/', '/benchmark/'))
     )
 
 
@@ -221,11 +224,27 @@ def create_app():
     @app.errorhandler(Exception)
     def handle_exception(e):
         if isinstance(e, HTTPException):
+            if (request.path or "").startswith("/v1/"):
+                return jsonify({
+                    "error": {
+                        "message": e.name or "Request failed.",
+                        "type": "invalid_request_error" if int(e.code or 500) < 500 else "server_error",
+                        "code": str(e.name or "http_error").lower().replace(" ", "_"),
+                    }
+                }), int(e.code or 500)
             return e
 
         app.logger.exception("Unhandled exception while serving %s %s", request.method, request.path)
 
         if _request_wants_json():
+            if (request.path or "").startswith("/v1/"):
+                return jsonify({
+                    "error": {
+                        "message": "Unexpected server error.",
+                        "type": "server_error",
+                        "code": "internal_error",
+                    }
+                }), 500
             return jsonify({"status": "error", "error": "Unexpected server error."}), 500
         return "Unexpected server error.", 500
 
