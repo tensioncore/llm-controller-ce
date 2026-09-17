@@ -29,7 +29,18 @@ from installer_service import connect_mysql_server
 from db_mysql import mysql_conn
 from app_settings import get_setting, set_setting, get_password_policy, get_all_settings_rows
 from extensions import SOCKET_MAX_HTTP_BUFFER_BYTES
-from runtime_config import validate_scan_directory_value
+from runtime_config import get_chat_import_max_mib, validate_scan_directory_value
+from smtp_credentials import (
+    MAX_SMTP_PASSWORD_BYTES,
+    SmtpCredentialError,
+    encrypt_smtp_password,
+    smtp_password_is_configured,
+)
+from user_preferences import (
+    MAX_SYSTEM_INSTRUCTIONS_CHARS,
+    get_user_system_instructions,
+    set_user_system_instructions,
+)
 
 settings_routes = Blueprint('settings_routes', __name__)
 
@@ -117,7 +128,7 @@ def _parse_bool_payload(value):
     raise ValueError("Must be true or false")
 
 
-def _validate_admin_csrf():
+def _validate_request_csrf():
     try:
         body = request.get_json(silent=True) if request.is_json else None
         csrf_token = (
@@ -276,6 +287,66 @@ def check_password_complexity(pw: str):
     return errors
 
 
+@settings_routes.route('/system_instructions', methods=['GET'])
+@login_required()
+def get_system_instructions_preference():
+    user_id = session.get('user_id')
+    try:
+        system_instructions = get_user_system_instructions(user_id) or ""
+    except Exception:
+        current_app.logger.exception("Could not load the current user's System Instructions.")
+        return jsonify({
+            "status": "error",
+            "error": "System Instructions could not be loaded."
+        }), 500
+
+    return jsonify({
+        "status": "success",
+        "system_instructions": system_instructions,
+        "max_chars": MAX_SYSTEM_INSTRUCTIONS_CHARS,
+    })
+
+
+@settings_routes.route('/system_instructions', methods=['POST'])
+@login_required()
+def update_system_instructions_preference():
+    csrf_error = _validate_request_csrf()
+    if csrf_error:
+        return csrf_error
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or "system_instructions" not in data:
+        return jsonify({
+            "status": "error",
+            "error": "System Instructions text is required."
+        }), 400
+
+    user_id = session.get('user_id')
+    try:
+        system_instructions = set_user_system_instructions(
+            user_id,
+            data.get("system_instructions"),
+        )
+    except ValueError as exc:
+        return jsonify({"status": "error", "error": str(exc)}), 400
+    except Exception:
+        current_app.logger.exception("Could not save the current user's System Instructions.")
+        return jsonify({
+            "status": "error",
+            "error": "System Instructions could not be saved."
+        }), 500
+
+    return jsonify({
+        "status": "success",
+        "system_instructions": system_instructions or "",
+        "message": (
+            "System Instructions saved."
+            if system_instructions
+            else "System Instructions cleared."
+        ),
+    })
+
+
 def validate_settings_payload(data):
     errors = {}
 
@@ -341,6 +412,7 @@ def validate_settings_payload(data):
                 raise ValueError
         except Exception:
             errors["db_port"] = "Must be integer between 1 and 65535"
+    check_optional_int("chat_import_max_mib", 10, 1024)
     check_optional_int("attachments_max_files", 1, 1000)
     check_optional_int("attachments_max_file_bytes", 1, MAX_ATTACHMENT_TRANSPORT_BYTES)
     check_optional_int("attachments_max_total_bytes", 1, MAX_ATTACHMENT_TRANSPORT_BYTES)
@@ -360,6 +432,19 @@ def validate_settings_payload(data):
     for field in ("auth_smtp_enabled", "auth_smtp_use_tls", "api_enabled"):
         if field in data and str(data.get(field)).lower() not in ("true", "false", "1", "0", "on", "off"):
             errors[field] = "Must be true or false"
+
+    if "auth_smtp_password" in data:
+        smtp_password = str(data.get("auth_smtp_password", "") or "")
+        if smtp_password and smtp_password != SMTP_PASSWORD_MASK:
+            try:
+                smtp_password_bytes = smtp_password.encode("utf-8")
+            except UnicodeError:
+                errors["auth_smtp_password"] = "Must be valid UTF-8 text"
+            else:
+                if len(smtp_password_bytes) > MAX_SMTP_PASSWORD_BYTES:
+                    errors["auth_smtp_password"] = (
+                        f"Must be {MAX_SMTP_PASSWORD_BYTES} UTF-8 bytes or fewer"
+                    )
 
     if "title_model_path" in data:
         title_model_path = data.get("title_model_path")
@@ -555,6 +640,7 @@ def get_settings():
     policy = get_password_policy()
     payload = {
         "version": version,
+        "chat_import_max_mib": get_chat_import_max_mib(),
         "attachments_max_files": attachments_max_files,
         "attachments_max_file_bytes": attachments_max_file_bytes,
         "attachments_max_total_bytes": attachments_max_total_bytes,
@@ -593,7 +679,16 @@ def get_settings():
     auth_smtp_port = _get_db_int_setting("auth.smtp.port", minimum=1) or 587
     auth_smtp_use_tls = bool(_get_db_setting("auth.smtp.use_tls", cast=bool))
     auth_smtp_username = str(_get_db_setting("auth.smtp.username") or "")
-    auth_smtp_password_present = bool(str(_get_db_setting("auth.smtp.password") or ""))
+    auth_smtp_password_value = str(_get_db_setting("auth.smtp.password") or "")
+    auth_smtp_password_error = ""
+    try:
+        auth_smtp_password_present = smtp_password_is_configured(auth_smtp_password_value)
+    except SmtpCredentialError:
+        auth_smtp_password_present = False
+        auth_smtp_password_error = (
+            "Stored SMTP password is invalid or cannot be decrypted. "
+            "Enter and save a new SMTP password."
+        )
     auth_smtp_from_email = str(_get_db_setting("auth.smtp.from_email") or "")
     auth_public_base_url = str(_get_db_setting("auth.public_base_url") or "")
     normalized_auth_public_base_url = normalize_auth_public_base_url(auth_public_base_url)
@@ -602,7 +697,11 @@ def get_settings():
     auth_email_token_request_cooldown_seconds = _get_db_int_setting("auth.email_token_request_cooldown_seconds", minimum=1) or 60
     auth_smtp_missing = not auth_smtp_enabled or not auth_smtp_host.strip() or not auth_smtp_from_email.strip()
     auth_public_base_url_missing = not normalized_auth_public_base_url
-    auth_email_ready = not auth_smtp_missing and not auth_public_base_url_missing
+    auth_email_ready = (
+        not auth_smtp_missing
+        and not auth_smtp_password_error
+        and not auth_public_base_url_missing
+    )
 
     payload.update({
         "db_host": bootstrap_config.get("db_host", DEFAULT_BOOTSTRAP_CONFIG["db_host"]),
@@ -640,6 +739,8 @@ def get_settings():
             "email_confirm_token_ttl_minutes": auth_email_confirm_token_ttl_minutes,
             "email_token_request_cooldown_seconds": auth_email_token_request_cooldown_seconds,
             "warning": (
+                auth_smtp_password_error
+                if auth_smtp_password_error else
                 "SMTP is disabled or missing required host/from address settings."
                 if auth_smtp_missing else
                 "Valid public base URL is required before auth email links can be sent."
@@ -691,7 +792,7 @@ def export_backup():
 @settings_routes.route('/update_settings', methods=['POST'])
 @login_required(role='admin')
 def update_settings():
-    csrf_error = _validate_admin_csrf()
+    csrf_error = _validate_request_csrf()
     if csrf_error:
         return csrf_error
 
@@ -702,6 +803,23 @@ def update_settings():
         return jsonify({"status": "error", "errors": errors}), 400
 
     uid = session.get("user_id")
+
+    encrypted_smtp_password = None
+    if "auth_smtp_password" in data:
+        submitted_smtp_password = str(data.get("auth_smtp_password", "") or "")
+        if submitted_smtp_password and submitted_smtp_password != SMTP_PASSWORD_MASK:
+            try:
+                encrypted_smtp_password = encrypt_smtp_password(submitted_smtp_password)
+            except SmtpCredentialError:
+                current_app.logger.error(
+                    "SMTP password was not saved because credential encryption is unavailable."
+                )
+                return jsonify({
+                    "status": "error",
+                    "error": (
+                        "SMTP password could not be saved with the persistent application secret."
+                    ),
+                }), 500
 
     title_model_path_value = None
     if "title_model_path" in data:
@@ -822,6 +940,8 @@ def update_settings():
     set_setting("llm.defaults.top_p", float(data["top_p"]), "float", updated_by_user_id=uid)
     set_setting("llm.defaults.repeat_penalty", float(data["repeat_penalty"]), "float", updated_by_user_id=uid)
     set_setting("llm.defaults.seed", int(data["seed"]), "int", updated_by_user_id=uid)
+    if "chat_import_max_mib" in data:
+        set_setting("llm.chat_import.max_mib", int(data["chat_import_max_mib"]), "int", updated_by_user_id=uid)
     set_setting("llm.attachments.max_files", int(attachments_max_files), "int", updated_by_user_id=uid)
     set_setting("llm.attachments.max_file_bytes", int(attachments_max_file_bytes), "int", updated_by_user_id=uid)
     set_setting("llm.attachments.max_total_bytes", int(attachments_max_total_bytes), "int", updated_by_user_id=uid)
@@ -842,10 +962,13 @@ def update_settings():
         set_setting("auth.smtp.use_tls", data.get("auth_smtp_use_tls", "true"), "bool", updated_by_user_id=uid)
     if "auth_smtp_username" in data:
         set_setting("auth.smtp.username", str(data.get("auth_smtp_username", "") or "").strip(), "string", updated_by_user_id=uid)
-    if "auth_smtp_password" in data:
-        smtp_password = str(data.get("auth_smtp_password", "") or "")
-        if smtp_password and smtp_password != SMTP_PASSWORD_MASK:
-            set_setting("auth.smtp.password", smtp_password, "string", updated_by_user_id=uid)
+    if encrypted_smtp_password is not None:
+        set_setting(
+            "auth.smtp.password",
+            encrypted_smtp_password,
+            "string",
+            updated_by_user_id=uid,
+        )
     if "auth_smtp_from_email" in data:
         set_setting("auth.smtp.from_email", str(data.get("auth_smtp_from_email", "") or "").strip(), "string", updated_by_user_id=uid)
     if "auth_public_base_url" in data:
@@ -868,7 +991,7 @@ def update_settings():
 @settings_routes.route('/api_key/regenerate', methods=['POST'])
 @login_required(role='admin')
 def regenerate_api_key():
-    csrf_error = _validate_admin_csrf()
+    csrf_error = _validate_request_csrf()
     if csrf_error:
         return csrf_error
 
@@ -895,7 +1018,7 @@ def regenerate_api_key():
 @settings_routes.route('/api_key/revoke', methods=['POST'])
 @login_required(role='admin')
 def revoke_api_key():
-    csrf_error = _validate_admin_csrf()
+    csrf_error = _validate_request_csrf()
     if csrf_error:
         return csrf_error
 

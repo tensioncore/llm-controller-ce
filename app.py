@@ -111,6 +111,8 @@ def _configure_normal_mode(app: Flask):
     from chat_routes import chat_routes
     from helpers import get_password_settings, init_db
     from model_routes import model_routes
+    from project_routes import project_routes
+    from runtime_config import get_chat_import_max_mib
     from settings_routes import settings_routes
 
     cors_allowed_origins = get_cors_allowed_origins(app.config.get("BOOTSTRAP_CONFIG"))
@@ -127,6 +129,7 @@ def _configure_normal_mode(app: Flask):
 
     app.register_blueprint(chat_routes, url_prefix="/chat")
     app.register_blueprint(model_routes, url_prefix="/model")
+    app.register_blueprint(project_routes, url_prefix="/projects")
     app.register_blueprint(settings_routes, url_prefix="/settings")
     app.register_blueprint(analytics_routes, url_prefix="/analytics")
     app.register_blueprint(api_routes)
@@ -146,6 +149,7 @@ def _configure_normal_mode(app: Flask):
             version=version,
             role=session.get("role"),
             settings=settings,
+            chat_import_max_mib=get_chat_import_max_mib(),
             bootstrap_config_path=app.config.get("BOOTSTRAP_CONFIG_PATH"),
         )
 

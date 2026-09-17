@@ -53,7 +53,9 @@ It combines the operational side and the everyday usage side of local GGUF model
 ## Highlights
 
 ### Persistent Chat Workspace
-Stream responses live, stop generation mid-stream, regenerate the latest answer, edit the latest prompt, and keep conversations organized through saved chat sessions with auto-generated titles, a searchable chat sidebar, and direct chat URLs that preserve the active chat across page refreshes.
+Stream responses live, stop generation mid-stream, regenerate the latest answer, edit the latest prompt, and keep conversations organized through saved chat sessions with auto-generated titles, a searchable chat sidebar, and direct chat URLs that preserve the active chat across page refreshes. Save personal System Instructions for browser chats, organize conversations into Projects, and add Project Instructions for shared context within each Project.
+
+Import JSON or CSV chat exports; administrators can also import SQLite backups with Project metadata. Export conversations as JSON, CSV, or a read-only Markdown archive.
 
 ![LLM Controller CE Chat Interface](docs/images/chat-screenshot.png)
 
@@ -68,10 +70,12 @@ Scan a configured model directory for GGUF files, maintain a registry of availab
 ![Model Library Drawer](docs/images/model-drawer.png)
 
 ### File-Aware And Image-Aware Conversations
-Attach supported text files and PNG, JPEG, or WebP images through the file picker, drag-and-drop, or clipboard paste. Attachments remain associated with saved conversations and are validated against server-side count and size limits. Image understanding requires a compatible GGUF model, a compatible `llama-server` build, and a valid projector configured for the active model; text-only chat remains unchanged when no image is attached.
+Attach text/code files, supported documents, and PNG, JPEG, WebP, GIF, HEIC/HEIF, AVIF, TIFF, or BMP images through the file picker, drag-and-drop, or clipboard paste. Docling converts PDF, modern Office and OpenDocument files, email, EPUB, and other supported documents locally to text. Attachments stay with saved conversations and use configurable count and size limits.
+
+Original images are preserved. TIFF and HEIC/HEIF receive browser-compatible PNG previews; animated GIF previews remain animated. Model input uses the first frame/page, converting formats other than PNG/JPEG to PNG. Image understanding requires a compatible GGUF model, `llama-server` build, and projector. See **`INSTALL.md`** for document preparation and supported formats.
 
 ### Controlled OpenAI-Compatible API Access
-Administrators can generate a single CE API key and explicitly enable an allowlisted API surface on the existing application server. It exposes only `GET /v1/models` and `POST /v1/chat/completions`, uses Bearer authentication, and serves only the active model. Streaming, non-streaming, and supported inline multimodal requests use the same private loopback `llama-server` runtime; model lifecycle and administrative routes are not exposed.
+Administrators can generate a single CE API key and explicitly enable an allowlisted API surface on the existing application server. It exposes only `GET /v1/models` and `POST /v1/chat/completions`, uses Bearer authentication, and serves only the active model. Streaming, non-streaming, and supported inline multimodal requests use the same private loopback `llama-server` runtime; model lifecycle and administrative routes are not exposed. Administrator-only API Analytics shows request counts, errors, duration, recorded token usage, and recent requests without storing prompts or responses.
 
 ### Benchmarks
 Run administrator-controlled benchmarks across eligible models, edit the benchmark prompt set, review best-run summaries, move between summary and detailed saved outputs, and clearly distinguish current results from stale ones after prompt changes.
@@ -107,7 +111,7 @@ For people who care about local AI and controlling their own stack, this is the 
 
 ## Requirements
 
-LLM Controller CE v1.2 is developed and validated with Python 3.11.7 and MySQL 8.0.22. It expects a self-hosted environment with:
+LLM Controller CE v1.3 targets Python 3.11.7 and MySQL 8.0.22. It expects a self-hosted environment with:
 
 - Python 3
 - MySQL
@@ -125,7 +129,7 @@ LLM Controller CE uses a first-run web installer.
 
 Basic flow:
 
-1. Install Python packages
+1. Install Python packages and prepare local Docling artifacts if PDF support is needed
 2. Prepare MySQL
 3. Place your `llama-server` runtime
 4. Place your local models

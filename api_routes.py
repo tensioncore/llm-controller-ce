@@ -9,7 +9,7 @@ import requests
 from flask import Blueprint, Response, jsonify, request, stream_with_context
 
 from app_settings import get_setting
-from attachment_utils import normalize_openai_messages
+from attachment_utils import messages_have_images, normalize_openai_messages
 from helpers import record_request_event
 import model_routes
 
@@ -95,14 +95,6 @@ def _configured_attachment_limits():
         values["llm.attachments.max_file_bytes"],
         values["llm.attachments.max_total_bytes"],
     )
-def _messages_have_images(messages):
-    for message in messages or []:
-        content = message.get("content") if isinstance(message, dict) else None
-        if isinstance(content, list) and any(part.get("type") == "image_url" for part in content if isinstance(part, dict)):
-            return True
-    return False
-
-
 def _requested_stream_value(data):
     value = data.get("stream", False)
     return value if isinstance(value, bool) else False
@@ -333,7 +325,7 @@ def chat_completions():
             max_images=max_images,
             max_total_image_bytes=max_total_image_bytes,
         )
-        if _messages_have_images(messages) and not bool((model_routes.current_main_model_runtime or {}).get("supports_images")):
+        if messages_have_images(messages) and not bool((model_routes.current_main_model_runtime or {}).get("supports_images")):
             raise ValueError("The active model runtime is not configured for image understanding. Configure a compatible projector and restart the model.")
         payload = _backend_payload(data, messages)
     except ValueError as exc:
@@ -385,7 +377,6 @@ def chat_completions():
             if not isinstance(result, dict):
                 raise ValueError("Invalid backend response")
         except (ValueError, requests.RequestException):
-            backend_response.close()
             _record_api_event(
                 started_at,
                 requested_model,

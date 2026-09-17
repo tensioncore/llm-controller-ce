@@ -18,7 +18,7 @@
       return Array.isArray(value) ? value : [];
     }
 
-    function fetchAnalytics() {
+    function fetchChatAnalytics() {
       const prefix = (typeof window.ANALYTICS_PREFIX === "string"
         ? window.ANALYTICS_PREFIX
         : (typeof ANALYTICS_PREFIX === "string" ? ANALYTICS_PREFIX : "/analytics"));
@@ -123,6 +123,181 @@
           if (dash) dash.innerHTML = "<p>Error loading analytics.</p>";
         });
     }
+
+    function formatKnownInteger(value) {
+      if (value === null || typeof value === "undefined" || value === "") return "—";
+      const number = Number(value);
+      return Number.isFinite(number) ? Math.trunc(number).toLocaleString() : "—";
+    }
+
+    function formatKnownDuration(value) {
+      if (value === null || typeof value === "undefined" || value === "") return "—";
+      const seconds = Number(value);
+      if (!Number.isFinite(seconds) || seconds < 0) return "—";
+      return typeof window.formatTime === "function" ? window.formatTime(seconds) : `${seconds.toFixed(2)}s`;
+    }
+
+    function formatEventTime(value) {
+      const timestamp = Number(value);
+      if (!Number.isFinite(timestamp) || timestamp <= 0) return "—";
+      const date = new Date(timestamp * 1000);
+      return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString();
+    }
+
+    function humanizeStatus(value) {
+      const text = String(value || "unknown").trim().replace(/[_-]+/g, " ");
+      return text.replace(/\b\w/g, character => character.toUpperCase());
+    }
+
+    function apiEndpointCell(event) {
+      const endpoint = String(event.endpoint || "").trim();
+      const knownEndpoints = {
+        "/v1/models": { label: "Models", method: "GET" },
+        "/v1/chat/completions": { label: "Chat Completions", method: "POST" }
+      };
+      const details = knownEndpoints[endpoint] || { label: endpoint || "Unknown", method: "" };
+      const metadata = [details.method, endpoint].filter(Boolean).join(" ");
+      const streaming = event.streaming ? `<span class="analytics-inline-badge">Streaming</span>` : "";
+      return `<span class="api-analytics-primary">${escapeHtml(details.label)}</span><span class="api-analytics-secondary">${escapeHtml(metadata)}${streaming}</span>`;
+    }
+
+    function apiModelCell(event) {
+      const requested = String(event.requested_model || "").trim();
+      const active = String(event.active_model || "").trim();
+      const primary = requested || active;
+      if (!primary) return "—";
+
+      let html = `<span class="api-analytics-primary" title="${escapeHtml(primary)}">${escapeHtml(prettifyModelName(primary))}</span>`;
+      if (requested && active && requested !== active) {
+        html += `<span class="api-analytics-secondary" title="${escapeHtml(active)}">Active: ${escapeHtml(prettifyModelName(active))}</span>`;
+      }
+      return html;
+    }
+
+    function apiResultCell(event) {
+      const status = String(event.status || "unknown").trim().toLowerCase();
+      const hasHttpStatus = event.http_status !== null && typeof event.http_status !== "undefined" && event.http_status !== "";
+      const httpStatus = hasHttpStatus ? Number(event.http_status) : null;
+      const isSuccess = status === "completed" && (!Number.isFinite(httpStatus) || httpStatus < 400);
+      const result = `${humanizeStatus(status)}${Number.isFinite(httpStatus) ? ` · ${httpStatus}` : ""}`;
+      return `<span class="analytics-status-badge ${isSuccess ? "is-success" : "is-error"}">${escapeHtml(result)}</span>`;
+    }
+
+    function renderApiAnalytics(data) {
+      const dashboard = document.getElementById("apiAnalyticsDashboard");
+      if (!dashboard) return;
+
+      const summary = data && typeof data.summary === "object" ? data.summary : {};
+      const recent = asArray(data?.recent);
+      const page = Number(data?.pagination?.page) || 1;
+      const totalPages = Number(data?.pagination?.total_pages) || 1;
+      let html = `<div class="api-analytics-summary" aria-label="API analytics summary">`;
+      html += `<div><span>API Requests</span><strong>${formatKnownInteger(summary.api_requests ?? 0)}</strong></div>`;
+      html += `<div><span>Completion Requests</span><strong>${formatKnownInteger(summary.completion_requests ?? 0)}</strong></div>`;
+      html += `<div><span>Errors</span><strong>${formatKnownInteger(summary.errors ?? 0)}</strong></div>`;
+      html += `<div><span>Recorded Tokens</span><strong>${formatKnownInteger(summary.recorded_tokens)}</strong></div>`;
+      html += `<div><span>Avg Completion Time</span><strong>${formatKnownDuration(summary.avg_completion_time)}</strong></div>`;
+      html += `</div>`;
+      html += `<div class="analytics-table-wrap" role="region" aria-label="Recent API activity" tabindex="0"><table id="apiAnalyticsTable" class="analyticsTable api-analytics-table responsive-table"><colgroup><col class="api-time-col"><col class="api-endpoint-col"><col class="api-model-col"><col class="api-result-col"><col class="api-duration-col"><col class="api-tokens-col"></colgroup><thead><tr><th scope="col">Time</th><th scope="col">Endpoint</th><th scope="col">Model</th><th scope="col">Result</th><th scope="col" class="analytics-number">Duration</th><th scope="col" class="analytics-number">Tokens</th></tr></thead><tbody>`;
+
+      if (!recent.length) {
+        html += `<tr><td colspan="6" class="api-analytics-empty">No API request activity has been recorded.</td></tr>`;
+      } else {
+        recent.forEach(event => {
+          html += "<tr>";
+          html += `<td data-label="Time" class="api-analytics-time">${escapeHtml(formatEventTime(event.timestamp))}</td>`;
+          html += `<td data-label="Endpoint">${apiEndpointCell(event)}</td>`;
+          html += `<td data-label="Model">${apiModelCell(event)}</td>`;
+          html += `<td data-label="Result">${apiResultCell(event)}</td>`;
+          html += `<td data-label="Duration" class="analytics-number">${formatKnownDuration(event.duration)}</td>`;
+          html += `<td data-label="Tokens" class="analytics-number">${formatKnownInteger(event.total_tokens)}</td>`;
+          html += "</tr>";
+        });
+      }
+
+      html += "</tbody></table></div>";
+      if (totalPages > 1) {
+        html += `<nav class="api-analytics-pagination" aria-label="API request history pages">`;
+        html += `<button type="button" data-api-page="${page - 1}" ${page <= 1 ? "disabled" : ""}>Previous</button>`;
+        html += `<span>Page ${page.toLocaleString()} / ${totalPages.toLocaleString()}</span>`;
+        html += `<button type="button" data-api-page="${page + 1}" ${page >= totalPages ? "disabled" : ""}>Next</button>`;
+        html += `</nav>`;
+      }
+      dashboard.innerHTML = html;
+      dashboard.querySelectorAll("[data-api-page]").forEach(button => {
+        button.addEventListener("click", () => fetchApiAnalytics(Number(button.dataset.apiPage)));
+      });
+    }
+
+    function fetchApiAnalytics(page = 1) {
+      const prefix = (typeof window.ANALYTICS_PREFIX === "string"
+        ? window.ANALYTICS_PREFIX
+        : (typeof ANALYTICS_PREFIX === "string" ? ANALYTICS_PREFIX : "/analytics"));
+      const dashboard = document.getElementById("apiAnalyticsDashboard");
+      if (!dashboard) return;
+
+      dashboard.innerHTML = "Loading API analytics...";
+      fetch(`${prefix}/api?page=${encodeURIComponent(page)}`, { cache: "no-store", credentials: "same-origin" })
+        .then(async response => {
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(data.message || data.error || `HTTP ${response.status}`);
+          return data;
+        })
+        .then(renderApiAnalytics)
+        .catch(error => {
+          console.error("Error fetching API analytics:", error);
+          dashboard.innerHTML = "<p>Error loading API analytics.</p>";
+        });
+    }
+
+    function selectedAnalyticsTab() {
+      return document.getElementById("analyticsApiTab")?.getAttribute("aria-selected") === "true" ? "api" : "chat";
+    }
+
+    function fetchAnalytics() {
+      if (selectedAnalyticsTab() === "api") {
+        fetchApiAnalytics();
+      } else {
+        fetchChatAnalytics();
+      }
+    }
+
+    function selectAnalyticsTab(name, focusTab = false) {
+      const tabs = Array.from(document.querySelectorAll("[data-analytics-tab]"));
+      if (!tabs.length) return;
+
+      tabs.forEach(tab => {
+        const selected = tab.dataset.analyticsTab === name;
+        tab.classList.toggle("active", selected);
+        tab.setAttribute("aria-selected", selected ? "true" : "false");
+        tab.tabIndex = selected ? 0 : -1;
+        if (selected && focusTab) tab.focus();
+      });
+
+      const chatPanel = document.getElementById("analyticsChatPanel");
+      const apiPanel = document.getElementById("analyticsApiPanel");
+      if (chatPanel) chatPanel.hidden = name !== "chat";
+      if (apiPanel) apiPanel.hidden = name !== "api";
+      fetchAnalytics();
+    }
+
+    function initializeAnalyticsTabs() {
+      const tabs = Array.from(document.querySelectorAll("[data-analytics-tab]"));
+      tabs.forEach((tab, index) => {
+        tab.addEventListener("click", () => selectAnalyticsTab(tab.dataset.analyticsTab));
+        tab.addEventListener("keydown", event => {
+          if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+          event.preventDefault();
+          let targetIndex = index;
+          if (event.key === "Home") targetIndex = 0;
+          if (event.key === "End") targetIndex = tabs.length - 1;
+          if (event.key === "ArrowLeft") targetIndex = (index - 1 + tabs.length) % tabs.length;
+          if (event.key === "ArrowRight") targetIndex = (index + 1) % tabs.length;
+          selectAnalyticsTab(tabs[targetIndex].dataset.analyticsTab, true);
+        });
+      });
+    }
+
     function prettifyModelName(name) {
       const raw = String(name || "");
       const base = raw.split(/[\\/]/).pop(); // handles Windows + Linux paths
@@ -206,6 +381,12 @@
         dataRows.forEach(row => tbody.appendChild(row));
       }
   
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", initializeAnalyticsTabs);
+    } else {
+      initializeAnalyticsTabs();
+    }
+
     window.fetchAnalytics = fetchAnalytics;
     window.sortTable = sortTable;
   

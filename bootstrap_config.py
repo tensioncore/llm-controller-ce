@@ -37,6 +37,24 @@ def resolve_secret_key_path() -> str:
     return os.path.join(os.path.dirname(resolve_bootstrap_config_path()), APP_SECRET_FILENAME)
 
 
+class PersistentSecretKeyError(RuntimeError):
+    pass
+
+
+def get_persistent_secret_key() -> str:
+    """Return the persisted Flask secret without generating fallback key material."""
+    path = resolve_secret_key_path()
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            secret_key = handle.read().strip()
+    except (OSError, UnicodeError) as exc:
+        raise PersistentSecretKeyError("Persistent Flask secret key is unavailable.") from exc
+
+    if not secret_key:
+        raise PersistentSecretKeyError("Persistent Flask secret key is unavailable.")
+    return secret_key
+
+
 def _coerce_port(value, default: int) -> int:
     try:
         port = int(value)

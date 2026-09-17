@@ -44,7 +44,15 @@
 </head>
 <body>
     <div class="sidebar">
-        <h2>New Chat <button class="new-chat">➕</button></h2>
+        <h2>New Chat <button class="new-chat sidebar-add-control">➕</button></h2>
+        <section class="sidebar-projects" aria-labelledby="projectsSidebarTitle">
+            <div class="sidebar-projects-heading">
+                <span id="projectsSidebarTitle">Projects</span>
+                <button id="createProjectButton" class="sidebar-add-control" type="button" title="Create Project" aria-label="Create Project">➕</button>
+            </div>
+            <ul id="projectList" aria-label="Project filters"></ul>
+        </section>
+        <div id="chatHistoryContext" class="chat-history-context">All Chats</div>
         <div class="chat-history-search">
             <input id="chatHistorySearch" type="search" autocomplete="off" placeholder="Search chats" aria-label="Search chats">
         </div>
@@ -279,11 +287,23 @@
             <button class="drawer-close-btn" onclick="closeAllDrawers()">✖</button>
         </div>
         <div class="analytics-content">
-            <div class="refresh-notice">Includes all generated responses, including regenerate and edit variants.</div>
-            <div id="analyticsDashboard" class="analytics-dashboard" aria-live="polite">Loading analytics...</div>
-          
+            {% if session.get('role') == 'admin' %}
+            <div class="analytics-tabs" role="tablist" aria-label="Analytics views">
+                <button id="analyticsChatTab" class="analytics-tab active" type="button" role="tab" aria-selected="true" aria-controls="analyticsChatPanel" data-analytics-tab="chat">Chat Analytics</button>
+                <button id="analyticsApiTab" class="analytics-tab" type="button" role="tab" aria-selected="false" aria-controls="analyticsApiPanel" tabindex="-1" data-analytics-tab="api">API Analytics</button>
+            </div>
+            {% endif %}
+            <section id="analyticsChatPanel" class="analytics-tab-panel" {% if session.get('role') == 'admin' %}role="tabpanel" aria-labelledby="analyticsChatTab"{% endif %}>
+                <div class="refresh-notice">Includes all generated responses, including regenerate and edit variants.</div>
+                <div id="analyticsDashboard" class="analytics-dashboard" aria-live="polite">Loading analytics...</div>
+            </section>
+            {% if session.get('role') == 'admin' %}
+            <section id="analyticsApiPanel" class="analytics-tab-panel" role="tabpanel" aria-labelledby="analyticsApiTab" hidden>
+                <div class="refresh-notice">Installation-wide activity from the universal API key. Token totals include only backend-reported usage.</div>
+                <div id="apiAnalyticsDashboard" class="analytics-dashboard" aria-live="polite">Select API Analytics to load activity.</div>
+            </section>
+            {% endif %}
         </div>
-        
     </div>
 
     <div id="importExportDrawer" class="drawer">
@@ -311,7 +331,11 @@
                 <section class="chat-history-section chat-history-import-section" aria-labelledby="importChatHistoryTitle">
                     <div class="chat-history-section-heading">
                         <h3 id="importChatHistoryTitle">Import Chat History</h3>
-                        <p>JSON and CSV imports are assigned to your signed-in account. Any user IDs in the file are ignored.</p>
+                        {% if session.get('role') == 'admin' %}
+                        <p>Import chat history or restore a CE SQLite backup.</p>
+                        {% else %}
+                        <p>Import chat history from JSON or CSV.</p>
+                        {% endif %}
                     </div>
                     <div class="form-row">
                         <label for="importConflict">Conflict Resolution:</label>
@@ -320,17 +344,25 @@
                             <option value="overwrite">Overwrite</option>
                         </select>
                     </div>
-                    <p class="chat-history-option-help"><strong>Append:</strong> keeps existing chats and adds imported rows. <strong>Overwrite:</strong> replaces only your sessions whose IDs appear in the file.</p>
+                    {% if session.get('role') == 'admin' %}
                     <div class="form-row">
-                        <input type="file" id="importFile">
+                        <label for="importOwnership">Import ownership:</label>
+                        <select id="importOwnership">
+                            <option value="preserve_original_users" selected>Preserve original users</option>
+                            <option value="assign_to_me">Assign to my account</option>
+                        </select>
                     </div>
-                    <p class="chat-history-option-help">Import limit: 10 MB and 25,000 rows.</p>
+                    {% endif %}
+                    <div class="form-row">
+                        <input type="file" id="importFile" data-max-mib="{{ chat_import_max_mib }}" {% if session.get('role') == 'admin' %}accept=".json,.csv,.sqlite,.sqlite3,.db,.sqlite-backup"{% else %}accept=".json,.csv"{% endif %}>
+                    </div>
+                    <p class="chat-history-option-help">25,000 rows max | <span id="chatImportSizeLimit">{{ chat_import_max_mib }}</span> MiB max per import file</p>
                     <button type="button" onclick="importChatHistory()">Import</button>
                 </section>
                 <section class="chat-history-section chat-history-danger-section" aria-labelledby="clearChatHistoryTitle">
                     <div class="chat-history-section-heading">
                         <h3 id="clearChatHistoryTitle">Clear Chat History</h3>
-                        <p>Permanently deletes every chat owned by your signed-in account. This cannot be undone.</p>
+                        <p>Delete every chat owned by your signed-in account.</p>
                     </div>
                     <button id="clearChatHistoryBtn" class="chat-history-danger-btn" type="button" onclick="clearChatHistory()">Clear Chat History</button>
                 </section>
@@ -338,7 +370,6 @@
             {% if session.get('role') == 'admin' %}
             <div class="admin-container">
               <h2>Admin: User Chat Management</h2>
-              <p class="admin-chat-history-help">Export ALL Users preserves source user IDs for archive purposes. This drawer's importer always assigns valid imported chats to the signed-in account.</p>
           
               <form class="add-user-form" onsubmit="event.preventDefault();">
                 <button type="button" onclick="adminLoadChatUsers()">Load Users With Chats</button>
@@ -517,6 +548,14 @@
         <div class="admin-config-path">
             Modify system bootstrap config at: <code>{{ bootstrap_config_path }}</code>
         </div>
+        </div>
+
+        <div class="params-grid">
+            <div class="form-row">
+                <label for="chatImportMaxMib">Maximum Chat Import Size (MiB):</label>
+                <input type="number" id="chatImportMaxMib" min="10" max="1024" step="1" value="{{ chat_import_max_mib }}">
+                <small>Default: 64 MiB. Range: 10–1024 MiB. Applies to JSON, CSV, and SQLite chat imports.</small>
+            </div>
         </div>
 
         <div class="admin-system-db">
@@ -822,11 +861,60 @@
     </div>
 </div>
 
+<div class="modal-overlay" id="projectEditorModal" role="dialog" aria-modal="true" aria-labelledby="projectEditorTitle">
+    <div class="user-modal-card project-modal-card">
+        <button type="button" class="user-close-btn" data-project-modal-close="editor" aria-label="Close Project editor" title="Close">&times;</button>
+        <h3 id="projectEditorTitle">Create Project</h3>
+        <form id="projectEditorForm">
+            <input id="projectEditorId" type="hidden">
+            <label for="projectNameInput">Name</label>
+            <input id="projectNameInput" type="text" maxlength="100" required autocomplete="off">
+            <label for="projectInstructionsInput">Project Instructions</label>
+            <textarea id="projectInstructionsInput" rows="6" maxlength="20000" placeholder="Optional instructions for this Project"></textarea>
+            <div id="projectEditorError" class="project-modal-error" aria-live="polite"></div>
+            <div class="project-modal-actions">
+                <button type="button" class="user-action-btn" data-project-modal-close="editor">Cancel</button>
+                <button id="projectEditorSaveButton" type="submit" class="btn save-btn">Save Project</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="modal-overlay" id="projectAssignmentModal" role="dialog" aria-modal="true" aria-labelledby="projectAssignmentTitle">
+    <div class="user-modal-card project-modal-card project-assignment-card">
+        <button type="button" class="user-close-btn" data-project-modal-close="assignment" aria-label="Close Project assignment" title="Close">&times;</button>
+        <h3 id="projectAssignmentTitle">Move Conversation</h3>
+        <p id="projectAssignmentChatName" class="project-assignment-chat-name"></p>
+        <form id="projectAssignmentForm">
+            <label for="projectAssignmentSelect">Project</label>
+            <select id="projectAssignmentSelect"></select>
+            <div id="projectAssignmentError" class="project-modal-error" aria-live="polite"></div>
+            <div class="project-modal-actions">
+                <button type="button" class="user-action-btn" data-project-modal-close="assignment">Cancel</button>
+                <button id="projectAssignmentSaveButton" type="submit" class="btn save-btn">Move Conversation</button>
+            </div>
+        </form>
+    </div>
+</div>
+
 
 <div class="settings-modal-overlay" id="userSettingsModal" style="display:none;">
     <div class="user-modal-card">
-      <button class="user-close-btn" onclick="toggleUserSettingsModal(false)">✖</button>
+      <button type="button" class="user-close-btn" onclick="toggleUserSettingsModal(false)">✖</button>
       <h3>Account Settings</h3>
+      <form id="systemInstructionsForm">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <label for="systemInstructionsInput">System Instructions:</label>
+        <textarea id="systemInstructionsInput" name="system_instructions" rows="6"
+          placeholder="Example: Be concise, use metric units, and explain assumptions."
+          aria-describedby="system-instructions-note"></textarea>
+        <div id="system-instructions-note" class="muted-note">
+          Applied to future browser chats only. Leave blank to disable.
+        </div>
+        <button type="submit" class="btn save-btn">Save System Instructions</button>
+        <div id="system-instructions-alert" aria-live="polite"></div>
+      </form>
+      <hr>
       <form id="changeEmailForm">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <label>Request Email Change:<br>
@@ -1026,15 +1114,23 @@
     function importChatHistory() {
         const fileInput = document.getElementById("importFile");
         const conflict = document.getElementById("importConflict").value;
+        const ownership = document.getElementById("importOwnership")?.value;
         const file = fileInput.files[0];
         if (!file) {
             showCustomAlert("No file selected!");
             return;
         }
 
+        const maxMib = Number(fileInput.dataset.maxMib);
+        if (file.size > maxMib * 1024 * 1024) {
+            showCustomAlert(`Import file is too large. Maximum size is ${maxMib} MiB.`);
+            return;
+        }
+
         const formData = new FormData();
         formData.append("import_file", file);
         formData.append("conflict_resolution", conflict);
+        if (ownership) formData.append("ownership_mode", ownership);
 
         // Add CSRF token, which Flask CSRFProtect expects in either form body or as header
         formData.append("csrf_token", window.CSRF_TOKEN);

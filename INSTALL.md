@@ -1,10 +1,10 @@
 # LLM Controller CE - Installation Guide
 
-LLM Controller CE uses a first-run web installer. This guide gives one ordered Ubuntu/Linux fresh install flow from a new VM to a running service, an existing-install v1.2 upgrade path, and Windows runtime notes.
+LLM Controller CE uses a first-run web installer. This guide gives one ordered Ubuntu/Linux fresh install flow from a new VM to a running service, existing-install upgrade requirements, and Windows runtime notes.
 
 ## Requirements
 
-LLM Controller CE v1.2 is developed and validated with Python 3.11.7 and MySQL 8.0.22.
+LLM Controller CE v1.3 targets Python 3.11.7 and MySQL 8.0.22.
 
 You will need:
 
@@ -26,11 +26,68 @@ A complete LLM Controller CE application folder should include:
 * `install/schema.sql`
 * `install/seed.sql`
 * `install/upgrade_v1_2.sql` for an existing pre-v1.2 database
+* `install/upgrade_v1_3.sql` for an existing v1.2 database
 * a local models folder such as `LLMs/`
 
-## Existing v1.1 Installation Upgrade To v1.2
+## Local Docling Document Support
 
-Fresh installations receive the v1.2 fields and settings through `install/schema.sql` and `install/seed.sql`; do not run the upgrade SQL on a fresh database. For an existing v1.1 installation, stop the application, back up MySQL and `chats.sqlite`, deploy the v1.2 application files, and then run the manual upgrade once with the configured MySQL account:
+`requirements.txt` includes Docling 2.121.0 and its OpenDocument, JATS XML, and XBRL XML extras. Documents are converted locally to Markdown; only the converted text and basic metadata are saved.
+
+Supported documents include PDF; modern Office Open XML documents, templates, slideshows, and macro-enabled variants; OpenDocument files and templates; EPUB; EML and MSG; AsciiDoc; LaTeX; BoxNote; WebVTT; Apple Pages; JATS `.nxml`; XBRL `.xbrl`; and DocLang `.dclg`/`.dclx`. Text/code files use native text handling, and images use the image attachment path. Legacy DOC, XLS, and PPT are unsupported. No LibreOffice, ffmpeg, or external OCR application is required.
+
+PDF conversion runs on CPU with OCR disabled. After installing requirements, download the Docling layout and table models into `docling_artifacts/` beside `app.py`. This preparation requires internet access; conversion uses local artifacts and does not download them during chat. Missing or incomplete artifacts prevent PDF conversion. Other supported documents do not require these PDF artifacts.
+
+Ubuntu/Linux example:
+
+```bash
+cd /srv/llmcontroller
+./venv/bin/docling-tools models download layout tableformer --output-dir /srv/llmcontroller/docling_artifacts
+```
+
+Windows example for the default global Python installation:
+
+```cmd
+cd /d E:\LLM-Controller
+C:\Python311\Scripts\docling-tools.exe models download layout tableformer --output-dir E:\LLM-Controller\docling_artifacts
+```
+
+Use the `docling-tools` executable from the application's Python environment and keep the output path at `<LLM_CONTROLLER_DIR>/docling_artifacts`.
+
+CE requires these exact child directory names:
+
+```text
+<LLM_CONTROLLER_DIR>/docling_artifacts/
+  docling-project--docling-layout-heron/
+  docling-project--docling-models/
+```
+
+If downloaded or cloned repositories use another namespace-derived directory name, such as `ds4sd--...`, rename them to the corresponding names above before CE PDF conversion can find them.
+
+## Existing Installation Upgrades
+
+Before upgrading, stop CE and back up MySQL, `chats.sqlite`, and `bootstrap_config.json`. Deploy the application files, rerun `python -m pip install -r requirements.txt` with the application's Python executable, and prepare PDF artifacts if needed.
+
+### v1.2 To v1.3 Upgrade
+
+Run `install/upgrade_v1_3.sql` against the configured **MySQL** database. It creates `llm_user_preferences` with the fresh-install primary key and foreign key, then sets `app.version` to `LLM Controller CE v1.3`. It can be rerun without replacing existing preference rows; it does not repair a pre-existing table with a different definition.
+
+From the application directory, replace the example database/account with your configured values:
+
+```bash
+mysql -u llmcontroller -p llmcontroller < install/upgrade_v1_3.sql
+```
+
+The same command works in Windows Command Prompt. From PowerShell, use CMD's input redirection:
+
+```powershell
+cmd /c "mysql -u llmcontroller -p llmcontroller < install/upgrade_v1_3.sql"
+```
+
+Do not use `--force`; if any statement fails, keep CE stopped and resolve the error before retrying. MySQL schema changes commit independently, so the script is not an all-or-nothing transaction. Do not rerun the fresh-install schema or seed on an existing database. After a successful upgrade, restart CE, confirm the About version, and save/reload System Instructions. SQLite Project and request-tracking tables are initialized at startup; this script does not modify SQLite.
+
+### Historical v1.1 To v1.2 Upgrade
+
+The following migration applies only to pre-v1.2 databases. It adds the v1.2 fields and settings; it does not complete the v1.3 upgrade described above. Run it manually with the configured MySQL account after taking backups:
 
 ```bash
 mysqldump -u llmcontroller -p llmcontroller > llmcontroller-before-v1.2.sql
@@ -38,7 +95,7 @@ cp chats.sqlite chats-before-v1.2.sqlite
 mysql -u llmcontroller -p llmcontroller < install/upgrade_v1_2.sql
 ```
 
-Review the database name, account, paths, and backup location for your installation before running these operator commands. The application does not run this upgrade automatically. The SQL is idempotent for the v1.2 columns/settings it adds. Restart the application only after the application files and database schema are both updated; the SQLite request-tracking table is created by the normal local SQLite initialization path at startup.
+Adjust the database name, account, and backup paths for your installation. This historical migration is not automatic and sets the displayed version to v1.2; complete the v1.3 requirements above before restarting.
 
 ## Ubuntu/Linux Fresh Install
 
@@ -116,6 +173,8 @@ python3 -m venv venv
 ./venv/bin/python -m pip install --upgrade pip
 ./venv/bin/python -m pip install -r requirements.txt
 ```
+
+For PDF support, complete the artifact download under **Local Docling Document Support** before starting CE.
 
 If virtual environment creation fails on Ubuntu 24.04 with `ensurepip is not available`, install the matching venv package, then recreate the venv:
 
@@ -286,7 +345,11 @@ Leave the Admin Settings picker at **Select Title Generation Model** to generate
 
 In Admin Settings, rescan the Model Registry, mark Images only as operator-facing suitability metadata, and save the compatible projector filename for the model row. The projector file must already exist inside the configured model scan directory and must match the selected multimodal model. Stop and reload an already-running model after changing its projector configuration so the runtime starts with `--mmproj`. The runtime status, not the Images checkbox by itself, determines whether image requests are accepted.
 
-Supported browser image inputs are PNG, JPEG, and WebP. File picker, drag-and-drop, and clipboard files use the same configured attachment limits. Images are stored inline with the owning saved chat in local SQLite so saved previews reopen without a separate upload directory; deleting the chat deletes those records. This increases the size and sensitivity of `chats.sqlite` and chat-history exports, so protect both as content-bearing backups.
+Supported images are PNG, JPEG, WebP, GIF, HEIC/HEIF (`.heic`, `.heif`), AVIF (`.avif`), TIFF (`.tif`, `.tiff`), and BMP (`.bmp`). SVG is unsupported. PNG/JPEG are sent directly; other formats become an 8-bit RGB PNG using frame/page 0, flattening transparency onto white. Converted images are limited to 16,777,216 pixels.
+
+The normal requirements install supplies Pillow (`>=11.3,<13`) and `pillow-heif` (`>=1.1.1,<2`). No additional image models or browser decoder libraries are needed. Custom builds or platforms without matching wheels must provide the required codecs.
+
+Original images are saved with chats in `chats.sqlite`. TIFF and HEIC/HEIF use transient PNG previews in the composer and lightbox; no second image is saved. Animated GIF previews remain animated. File picker, drag-and-drop, and clipboard attachments share the configured limits. Protect `chats.sqlite` and chat exports as content-bearing backups.
 
 #### Optional Controlled API Setup
 
@@ -308,7 +371,7 @@ curl http://127.0.0.1:5000/v1/chat/completions \
   -d '{"model":"<ACTIVE_MODEL_ID>","messages":[{"role":"user","content":"Hello"}],"stream":false}'
 ```
 
-Use the exact model ID returned by `/v1/models`. Inline PNG, JPEG, and WebP data URLs are accepted only while the active runtime has a valid projector; remote image URLs are rejected. Request tracking stores operational metadata such as source, status, duration, and backend-provided usage only—not prompts, responses, images, API keys, or authorization headers.
+Use the exact model ID returned by `/v1/models`. Inline PNG, JPEG, WebP, GIF, HEIC/HEIF, AVIF, TIFF, and BMP data URLs are accepted only while the active runtime has a valid projector. The image conversion rules above also apply to API requests. Remote image URLs are rejected. Request tracking stores operational metadata such as source, status, duration, and backend-provided usage only—not prompts, responses, images, API keys, or authorization headers.
 
 ### 12. Stop The Manual App Process
 

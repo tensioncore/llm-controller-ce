@@ -133,6 +133,35 @@ def init_db():
     c.execute('CREATE INDEX IF NOT EXISTS idx_chats_user_session_active ON chats(user_id, session_id, active_in_chat, id)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_chats_turn_variant ON chats(user_id, session_id, turn_id, prompt_version, response_version)')
     c.execute('''
+        CREATE TABLE IF NOT EXISTS projects (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            instructions TEXT NULL,
+            created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)),
+            updated_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
+        )
+    ''')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_projects_user_updated ON projects(user_id, updated_at DESC, id DESC)')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS chat_sessions (
+            user_id INTEGER NOT NULL,
+            session_id TEXT NOT NULL,
+            project_id INTEGER NULL,
+            PRIMARY KEY (user_id, session_id)
+        )
+    ''')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_chat_sessions_user_project ON chat_sessions(user_id, project_id)')
+    c.execute('''
+        INSERT OR IGNORE INTO chat_sessions (user_id, session_id, project_id)
+        SELECT DISTINCT user_id, session_id, NULL
+         FROM chats
+         WHERE user_id IS NOT NULL
+           AND user_id > 0
+           AND session_id IS NOT NULL
+           AND TRIM(session_id) <> ''
+    ''')
+    c.execute('''
         CREATE TABLE IF NOT EXISTS request_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp INTEGER NOT NULL,

@@ -3,6 +3,13 @@ Flask-Bcrypt
 Flask-Cors
 Flask-SocketIO
 Flask-WTF
+cryptography
 gevent
 mysql-connector-python
 requests
+# Pillow's standard wheels provide AVIF; pillow-heif adds HEIC/HEIF decoding.
+Pillow>=11.3,<13
+pillow-heif>=1.1.1,<2
+# Keep Docling's selected Python-only format extras version-matched to its meta-package.
+docling==2.121.0
+docling-slim[format-opendocument,format-xml-jats,format-xml-xbrl]==2.121.0

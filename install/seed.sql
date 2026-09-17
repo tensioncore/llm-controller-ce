@@ -28,7 +28,7 @@ USE `llmcontroller`;
 --
 
 INSERT IGNORE INTO `llm_app_settings` (`key`, `value`, `value_type`, `description`, `updated_by_user_id`, `updated_at`) VALUES
-('app.version', 'LLM Controller CE v1.2', 'string', 'Displayed software version', NULL, '2026-03-16 07:21:16'),
+('app.version', 'LLM Controller CE v1.3', 'string', 'Displayed software version', NULL, '2026-03-16 07:21:16'),
 ('auth.email_confirm_token_ttl_minutes', '1440', 'int', 'Email confirmation token lifetime in minutes', NULL, '2026-05-05 00:00:00'),
 ('auth.email_token_request_cooldown_seconds', '60', 'int', 'Cooldown for auth email token requests', NULL, '2026-05-05 00:00:00'),
 ('auth.public_base_url', '', 'string', 'Public base URL for auth email links', NULL, '2026-05-05 00:00:00'),

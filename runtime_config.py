@@ -27,6 +27,15 @@ def get_scan_directory_setting() -> str:
     return value
 
 
+def get_chat_import_max_mib() -> int:
+    return _coerce_int(
+        get_setting("llm.chat_import.max_mib", default=64),
+        key="llm.chat_import.max_mib",
+        minimum=10,
+        maximum=1024,
+    )
+
+
 def resolve_scan_directory_path(scan_directory=None) -> str:
     raw_value = get_scan_directory_setting() if scan_directory is None else str(scan_directory or "").strip()
     if not raw_value:

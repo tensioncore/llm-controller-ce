@@ -12,8 +12,11 @@ import re
 import model_routes
 from attachment_utils import (
     ATTACHMENT_ENVELOPE_MAX_FILES,
+    decode_image_data_url,
     legacy_attachment_metadata,
+    messages_have_images,
     normalize_browser_attachments,
+    normalize_image_png_data_url,
     normalize_openai_messages,
     parse_attachment_context,
     serialize_attachment_envelope,
@@ -24,6 +27,14 @@ from app_settings import get_setting
 from auth import DEFAULT_SESSION_VERSION, _coerce_session_version, login_required, validate_session_user
 from db_mysql import mysql_conn
 from flask_socketio import disconnect, join_room, leave_room
+from user_preferences import (
+    UserPreferencesUnavailableError,
+    get_user_system_instructions,
+)
+from project_routes import (
+    ProjectInstructionsUnavailableError,
+    get_session_project_instructions,
+)
 from werkzeug.datastructures import MultiDict
 
 chat_routes = Blueprint('chat_routes', __name__)
@@ -740,7 +751,7 @@ def _build_attachment_text_blocks(attachments, char_budget):
     )
 
     for attachment_index, attachment in enumerate(attachments, start=1):
-        if attachment.get("kind") != "text" or exhausted:
+        if attachment.get("kind") not in {"text", "document"} or exhausted:
             continue
 
         chunks = _chunk_attachment_text(attachment.get("content") or "")
@@ -848,8 +859,22 @@ def _compose_model_user_content(user_message, attachment_context=None):
     return content
 
 
-def _build_limited_model_context(history_rows, user_message, attachment_context=None):
+def _build_limited_model_context(
+    user_id,
+    session_id,
+    history_rows,
+    user_message,
+    attachment_context=None,
+):
     _refresh_attachment_limits()
+    system_instructions = get_user_system_instructions(user_id)
+    project_instructions = get_session_project_instructions(user_id, session_id)
+    # Strict chat templates allow a system message only at index zero.
+    instruction_content = "\n\n".join(
+        instructions
+        for instructions in (system_instructions, project_instructions)
+        if instructions
+    )
     prior_rows = list(history_rows or [])[-max(0, MAX_CONTEXT_ACTIVE_TURNS - 1):]
     current_message = {
         "role": "user",
@@ -909,7 +934,10 @@ def _build_limited_model_context(history_rows, user_message, attachment_context=
 
     while True:
         try:
-            messages = _history_rows_to_messages(prior_rows)
+            messages = []
+            if instruction_content:
+                messages.append({"role": "system", "content": instruction_content})
+            messages.extend(_history_rows_to_messages(prior_rows))
             messages.append(current_message)
             return normalize_openai_messages(
                 messages,
@@ -988,14 +1016,30 @@ def _attachment_response_items(attachment_context):
     return parsed["attachments"]
 
 
-def _messages_have_images(messages):
-    for message in messages or []:
-        content = (message or {}).get("content")
-        if not isinstance(content, list):
-            continue
-        if any(isinstance(part, dict) and part.get("type") == "image_url" for part in content):
-            return True
-    return False
+@chat_routes.route('/attachment_preview', methods=['POST'])
+@login_required()
+def attachment_preview():
+    if not request.is_json:
+        return jsonify({"error": "A TIFF or HEIC/HEIF image data URL is required."}), 400
+    if request.content_length is not None and request.content_length > ATTACHMENT_TRANSPORT_ENVELOPE_BYTES:
+        return jsonify({"error": "The preview request exceeds the attachment size limit."}), 413
+    raw_body = request.stream.read(ATTACHMENT_TRANSPORT_ENVELOPE_BYTES + 1)
+    if len(raw_body) > ATTACHMENT_TRANSPORT_ENVELOPE_BYTES:
+        return jsonify({"error": "The preview request exceeds the attachment size limit."}), 413
+    try:
+        payload = json.loads(raw_body)
+        if not isinstance(payload, dict):
+            raise ValueError("A TIFF or HEIC/HEIF image data URL is required.")
+        # Use replay's fixed ceiling so lowering upload limits does not break saved previews.
+        mime_type, data = decode_image_data_url(payload.get("data_url"), ATTACHMENT_STORAGE_MAX_FILE_BYTES)
+        if mime_type not in {"image/tiff", "image/heif"}:
+            raise ValueError("Browser preview conversion is supported only for TIFF and HEIC/HEIF images.")
+        preview_url = normalize_image_png_data_url(mime_type, data)
+    except (ValueError, UnicodeError):
+        return jsonify({"error": "The image preview could not be generated."}), 400
+    response = jsonify({"preview_url": preview_url})
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 def _emit_receive_message(user_room, session_id, message_id, **extra):
@@ -1334,7 +1378,7 @@ def _stream_chat_reply(
     source_prompt_id = (replace_prompt_id or "").strip() or None
     if source_prompt_id:
         stream_event_extra["source_prompt_id"] = source_prompt_id
-    has_images = _messages_have_images(messages)
+    has_images = messages_have_images(messages)
     has_attachment_context = bool(attachment_context)
     preserve_failed_turn = bool(
         replace_prompt_id or edit_prompt_id or has_images or has_attachment_context
@@ -1965,8 +2009,18 @@ def handle_message(data):
         return
 
     try:
-        messages = _build_limited_model_context(history_rows, user_message, current_attachment_context)
-    except ValueError as exc:
+        messages = _build_limited_model_context(
+            user_id,
+            session_id,
+            history_rows,
+            user_message,
+            current_attachment_context,
+        )
+    except (
+        ValueError,
+        UserPreferencesUnavailableError,
+        ProjectInstructionsUnavailableError,
+    ) as exc:
         _emit_chat_error(
             user_room,
             action,
@@ -2067,8 +2121,18 @@ def handle_regenerate_message(data):
     user_message = (target_row[3] or "").strip()
     attachment_context = target_row[7]
     try:
-        messages = _build_limited_model_context(history_rows, user_message, attachment_context)
-    except ValueError as exc:
+        messages = _build_limited_model_context(
+            user_id,
+            session_id,
+            history_rows,
+            user_message,
+            attachment_context,
+        )
+    except (
+        ValueError,
+        UserPreferencesUnavailableError,
+        ProjectInstructionsUnavailableError,
+    ) as exc:
         _emit_chat_error(
             user_room,
             "regenerate",
@@ -2097,15 +2161,35 @@ def get_sessions():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("""
-        SELECT session_id,
-               MIN(session_name) AS session_name,
-               MAX(timestamp)    AS last_ts
-          FROM chats
-         WHERE user_id=?
-      GROUP BY session_id
-      ORDER BY last_ts DESC
-    """, (user_id,))
-    sessions = [{"session_id": row[0], "session_name": row[1], "timestamp": row[2]} for row in c.fetchall()]
+        SELECT grouped.session_id,
+               grouped.session_name,
+               grouped.last_ts,
+               owned_project.id AS project_id
+          FROM (
+                SELECT session_id,
+                       MIN(session_name) AS session_name,
+                       MAX(timestamp)    AS last_ts
+                  FROM chats
+                 WHERE user_id=?
+              GROUP BY session_id
+               ) AS grouped
+     LEFT JOIN chat_sessions AS metadata
+            ON metadata.user_id=?
+           AND metadata.session_id=grouped.session_id
+     LEFT JOIN projects AS owned_project
+            ON owned_project.id=metadata.project_id
+           AND owned_project.user_id=?
+      ORDER BY grouped.last_ts DESC
+    """, (user_id, user_id, user_id))
+    sessions = [
+        {
+            "session_id": row[0],
+            "session_name": row[1],
+            "timestamp": row[2],
+            "project_id": row[3],
+        }
+        for row in c.fetchall()
+    ]
     conn.close()
     return jsonify({"sessions": sessions})
 
@@ -2256,6 +2340,7 @@ def delete_session():
 
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
+    c.execute("DELETE FROM chat_sessions WHERE user_id=? AND session_id=?", (user_id, session_id))
     c.execute("DELETE FROM chats WHERE user_id=? AND session_id=?", (user_id, session_id))
     conn.commit()
     conn.close()

@@ -1,13 +1,28 @@
 import base64
 import binascii
+from io import BytesIO
 import json
+import logging
 import mimetypes
 import os
 import re
+import warnings
+
+from PIL import Image, ImageOps, UnidentifiedImageError
+from pillow_heif import register_heif_opener
+
+from document_conversion import (
+    DOCUMENT_FORMATS,
+    DocumentConversionError,
+    convert_document_bytes,
+)
+
+register_heif_opener(thumbnails=False)
 
 
 ATTACHMENT_ENVELOPE_TYPE = "llm-controller-attachments"
-ATTACHMENT_ENVELOPE_VERSION = 1
+ATTACHMENT_ENVELOPE_VERSION = 2
+SUPPORTED_ATTACHMENT_ENVELOPE_VERSIONS = frozenset({1, ATTACHMENT_ENVELOPE_VERSION})
 ATTACHMENT_ENVELOPE_MAX_FILES = 1000
 
 TEXT_EXTENSIONS = frozenset({
@@ -15,14 +30,48 @@ TEXT_EXTENSIONS = frozenset({
     ".yaml", ".yml", ".csv", ".log", ".ini", ".cfg", ".bat", ".ps1", ".sh",
     ".sql", ".php", ".java", ".c", ".cpp", ".h", ".cs", ".go", ".rs",
 })
-IMAGE_MIME_TYPES = frozenset({"image/png", "image/jpeg", "image/webp"})
-IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".webp"})
+IMAGE_MIME_ALIASES = {
+    "image/heic": "image/heif",
+    "image/heic-sequence": "image/heif",
+    "image/heif-sequence": "image/heif",
+    "image/x-tiff": "image/tiff",
+    "image/x-bmp": "image/bmp",
+    "image/x-ms-bmp": "image/bmp",
+}
+MODEL_IMAGE_FORMATS = {
+    "image/webp": "WEBP",
+    "image/gif": "GIF",
+    "image/heif": "HEIF",
+    "image/avif": "AVIF",
+    "image/tiff": "TIFF",
+    "image/bmp": "BMP",
+}
+MODEL_IMAGE_NORMALIZATION_MIME_TYPES = frozenset(MODEL_IMAGE_FORMATS)
+IMAGE_MIME_TYPES = MODEL_IMAGE_NORMALIZATION_MIME_TYPES.union({"image/png", "image/jpeg"})
+MODEL_IMAGE_MAX_PIXELS = 16_777_216
+DOCUMENT_EXTENSIONS = frozenset(DOCUMENT_FORMATS)
+DOCUMENT_EXTENSION_TO_MIME = {
+    extension: info["mime_type"]
+    for extension, info in DOCUMENT_FORMATS.items()
+}
+DOCUMENT_EXTENSION_TO_ACCEPTED_MIME_TYPES = {
+    extension: frozenset({info["mime_type"], *info.get("accepted_mime_types", ())})
+    for extension, info in DOCUMENT_FORMATS.items()
+}
 IMAGE_EXTENSION_TO_MIME = {
     ".png": "image/png",
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
     ".webp": "image/webp",
+    ".gif": "image/gif",
+    ".heic": "image/heif",
+    ".heif": "image/heif",
+    ".avif": "image/avif",
+    ".tif": "image/tiff",
+    ".tiff": "image/tiff",
+    ".bmp": "image/bmp",
 }
+IMAGE_EXTENSIONS = frozenset(IMAGE_EXTENSION_TO_MIME)
 TEXT_DEFAULT_MIME_TYPES = {
     ".txt": "text/plain",
     ".md": "text/markdown",
@@ -52,7 +101,7 @@ TEXT_DEFAULT_MIME_TYPES = {
     ".go": "text/plain",
     ".rs": "text/plain",
 }
-SUPPORTED_ATTACHMENT_EXTENSIONS = TEXT_EXTENSIONS.union(IMAGE_EXTENSIONS)
+SUPPORTED_ATTACHMENT_EXTENSIONS = TEXT_EXTENSIONS.union(IMAGE_EXTENSIONS, DOCUMENT_EXTENSIONS)
 SAFE_APPLICATION_TEXT_MIME_TYPES = frozenset({
     "application/json",
     "application/javascript",
@@ -66,11 +115,15 @@ SAFE_APPLICATION_TEXT_MIME_TYPES = frozenset({
     "application/yaml",
 })
 DATA_URL_RE = re.compile(
-    r"^data:(image/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=_-]+)$",
+    r"^data:(" + "|".join(re.escape(mime) for mime in sorted(IMAGE_MIME_TYPES.union(IMAGE_MIME_ALIASES)))
+    + r");base64,([A-Za-z0-9+/=_-]+)$",
     re.IGNORECASE,
 )
 LEGACY_ATTACHMENT_NAME_RE = re.compile(r"^\[Attached file:\s*(.+?)\]\s*$")
 LEGACY_ATTACHMENT_INDEX_RE = re.compile(r"^\[Attachment\s+(\d+)/(\d+)\]\s*$")
+DOCUMENT_CONTENT_TRUNCATION_NOTICE = "[Document content truncated to the attachment storage limit.]"
+
+logger = logging.getLogger(__name__)
 
 
 def attachment_extension(filename):
@@ -88,7 +141,8 @@ def sanitize_attachment_name(filename):
 
 
 def _normalize_mime_type(value):
-    return str(value or "").split(";", 1)[0].strip().lower()
+    mime = str(value or "").split(";", 1)[0].strip().lower()
+    return IMAGE_MIME_ALIASES.get(mime, mime)
 
 
 def infer_mime_type(filename, supplied=None):
@@ -122,6 +176,28 @@ def _image_magic_matches(mime_type, data):
         return len(data) >= 3 and data[:3] == b"\xff\xd8\xff"
     if mime_type == "image/webp":
         return len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP"
+    if mime_type == "image/gif":
+        return len(data) >= 6 and data[:6] in {b"GIF87a", b"GIF89a"}
+    if mime_type == "image/tiff":
+        return data[:4] in {b"II\x2a\x00", b"MM\x00\x2a", b"II\x2b\x00", b"MM\x00\x2b"}
+    if mime_type == "image/bmp":
+        return len(data) >= 14 and data[:2] == b"BM"
+    if mime_type in {"image/heif", "image/avif"}:
+        if len(data) < 16 or data[4:8] != b"ftyp":
+            return False
+        box_size = int.from_bytes(data[:4], "big")
+        if box_size < 16 or box_size > len(data) or (box_size - 16) % 4:
+            return False
+        major_brand = data[8:12]
+        brands = {major_brand, *(data[i:i + 4] for i in range(16, box_size, 4))}
+        avif_brands = {b"avif", b"avis"}
+        if mime_type == "image/avif":
+            return major_brand in avif_brands.union({b"mif1", b"msf1"}) and bool(brands & avif_brands)
+        # Generic HEIF container brands alone must not admit mislabeled AVIF images.
+        return major_brand in {
+            b"heic", b"heix", b"heim", b"heis", b"hevc", b"hevx",
+            b"hevm", b"hevs", b"mif1", b"msf1",
+        } and not brands & avif_brands
     return False
 
 
@@ -130,8 +206,8 @@ def decode_image_data_url(data_url, max_bytes):
     raw = str(data_url or "").strip()
     match = DATA_URL_RE.fullmatch(raw)
     if not match:
-        raise ValueError("Images must be supplied as PNG, JPEG, or WebP data URLs.")
-    mime_type = match.group(1).lower()
+        raise ValueError("Images must be supplied as PNG, JPEG, WebP, GIF, HEIC/HEIF, AVIF, TIFF, or BMP data URLs.")
+    mime_type = _normalize_mime_type(match.group(1))
     encoded = match.group(2).replace("-", "+").replace("_", "/")
     max_encoded_chars = ((max_bytes + 2) // 3) * 4 + 4
     if len(encoded) > max_encoded_chars:
@@ -149,11 +225,70 @@ def decode_image_data_url(data_url, max_bytes):
     return mime_type, data
 
 
+def decode_document_base64(data_base64, max_bytes):
+    max_bytes = max(1, int(max_bytes))
+    encoded = str(data_base64 or "").strip().replace("-", "+").replace("_", "/")
+    if not encoded:
+        raise ValueError("The document is empty.")
+    max_encoded_chars = ((max_bytes + 2) // 3) * 4 + 4
+    if len(encoded) > max_encoded_chars:
+        raise ValueError("The document exceeds the per-file attachment limit.")
+    try:
+        data = base64.b64decode(encoded, validate=True)
+    except (ValueError, binascii.Error) as exc:
+        raise ValueError("The document data was not valid base64.") from exc
+    if not data:
+        raise ValueError("The document is empty.")
+    if len(data) > max_bytes:
+        raise ValueError("The document exceeds the per-file attachment limit.")
+    return data
+
+
 def image_data_url(mime_type, data):
     mime = _normalize_mime_type(mime_type)
     if mime not in IMAGE_MIME_TYPES:
         raise ValueError("Unsupported image type.")
     return f"data:{mime};base64,{base64.b64encode(data or b'').decode('ascii')}"
+
+
+def normalize_image_png_data_url(mime_type, data):
+    """Build a transient PNG for model input or TIFF/HEIC/HEIF browser preview."""
+    mime = _normalize_mime_type(mime_type)
+    if mime not in MODEL_IMAGE_NORMALIZATION_MIME_TYPES or not _image_magic_matches(mime, data):
+        raise ValueError("Only validated supported images can be normalized for model input.")
+
+    expected_format = MODEL_IMAGE_FORMATS[mime]
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(BytesIO(data), formats=(expected_format,)) as source:
+                if source.format != expected_format:
+                    raise ValueError("The image contents do not match the declared image type.")
+                source.seek(0)  # One frame only, including page 0 of multi-page TIFFs.
+                width, height = source.size
+                if width <= 0 or height <= 0 or width * height > MODEL_IMAGE_MAX_PIXELS:
+                    raise ValueError("The image dimensions exceed the safe model-ingest limit.")
+                source.load()
+                if expected_format in {"HEIF", "AVIF", "TIFF", "BMP"}:
+                    # Some decoders refine the dimensions when loading pixels.
+                    width, height = source.size
+                    if width <= 0 or height <= 0 or width * height > MODEL_IMAGE_MAX_PIXELS:
+                        raise ValueError("The image dimensions exceed the safe model-ingest limit.")
+                    # New photo formats may carry orientation outside their pixel data.
+                    ImageOps.exif_transpose(source, in_place=True)
+                frame = source.convert("RGBA")
+
+        background = Image.new("RGBA", frame.size, (255, 255, 255, 255))
+        background.alpha_composite(frame)
+        normalized = background.convert("RGB")
+        output = BytesIO()
+        normalized.save(output, format="PNG")
+    except (Image.DecompressionBombError, Image.DecompressionBombWarning) as exc:
+        raise ValueError("The image dimensions exceed the safe model-ingest limit.") from exc
+    except (UnidentifiedImageError, OSError, SyntaxError, EOFError, RuntimeError) as exc:
+        raise ValueError(f"The {expected_format} image could not be decoded for model input.") from exc
+
+    return image_data_url("image/png", output.getvalue())
 
 
 def _declared_attachment_size(attachment, filename, max_file_bytes):
@@ -171,7 +306,120 @@ def _declared_attachment_size(attachment, filename, max_file_bytes):
     return value
 
 
-def normalize_browser_attachments(raw_attachments, max_files, max_file_bytes, max_total_bytes):
+def _limit_document_content(content, max_file_bytes):
+    if not isinstance(content, str):
+        raise ValueError("The document did not contain usable text.")
+    text = content.strip()
+    if not text:
+        raise ValueError("The document did not contain usable text.")
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_file_bytes:
+        return text, False
+
+    notice_bytes = DOCUMENT_CONTENT_TRUNCATION_NOTICE.encode("utf-8")
+    available = max(0, int(max_file_bytes) - len(notice_bytes) - 2)
+    prefix = encoded[:available].decode("utf-8", errors="ignore").rstrip()
+    if prefix:
+        return f"{prefix}\n\n{DOCUMENT_CONTENT_TRUNCATION_NOTICE}", True
+    return notice_bytes[:max_file_bytes].decode("utf-8", errors="ignore"), True
+
+
+def _normalize_stored_document_attachment(
+    attachment,
+    filename,
+    extension,
+    supplied_mime,
+    max_file_bytes,
+):
+    if "data_base64" in attachment or "data_url" in attachment:
+        raise ValueError("Stored document attachments must not include source document data.")
+
+    declared_size = _declared_attachment_size(attachment, filename, max_file_bytes)
+    if declared_size is None or declared_size <= 0:
+        raise ValueError(f"Invalid stored document size for {filename}.")
+    expected_mime = DOCUMENT_EXTENSION_TO_MIME[extension]
+    declared_mime = _normalize_mime_type(supplied_mime)
+    if declared_mime and declared_mime != expected_mime:
+        raise ValueError(f"Document type does not match filename: {filename}")
+
+    expected_format = DOCUMENT_FORMATS[extension]["format_name"]
+    source_format = str(attachment.get("document_format") or "").strip().lower()
+    if source_format != expected_format:
+        raise ValueError(f"Invalid stored document metadata for {filename}.")
+
+    page_count = attachment.get("page_count")
+    if page_count is not None:
+        if type(page_count) is not int or page_count < 0:
+            raise ValueError(f"Invalid stored document metadata for {filename}.")
+
+    content, content_truncated = _limit_document_content(
+        attachment.get("content"),
+        max_file_bytes,
+    )
+    normalized = {
+        "kind": "document",
+        "name": filename,
+        "mime_type": expected_mime,
+        "size": declared_size,
+        "content": content,
+        "document_format": expected_format,
+        "page_count": page_count,
+    }
+    if content_truncated or attachment.get("content_truncated") is True:
+        normalized["content_truncated"] = True
+    return normalized
+
+
+def _normalize_browser_document_attachment(
+    data,
+    filename,
+    extension,
+    max_file_bytes,
+):
+    try:
+        converted = convert_document_bytes(
+            data,
+            filename,
+            max_file_bytes=max_file_bytes,
+        )
+    except DocumentConversionError as exc:
+        logger.warning(
+            "Document attachment conversion failed: format=%s bytes=%d reason=%s",
+            extension.lstrip("."),
+            len(data),
+            str(exc),
+        )
+        raise ValueError(str(exc)) from exc
+
+    content, content_truncated = _limit_document_content(converted.markdown, max_file_bytes)
+    logger.info(
+        "Document attachment converted: format=%s bytes=%d pages=%s",
+        converted.source_format,
+        len(data),
+        converted.page_count if converted.page_count is not None else "unknown",
+    )
+    normalized = {
+        "kind": "document",
+        "name": filename,
+        "mime_type": converted.source_mime_type,
+        "size": len(data),
+        "content": content,
+        "document_format": converted.source_format,
+        "page_count": converted.page_count,
+    }
+    if content_truncated:
+        normalized["content_truncated"] = True
+    return normalized
+
+
+def normalize_browser_attachments(
+    raw_attachments,
+    max_files,
+    max_file_bytes,
+    max_total_bytes,
+    *,
+    allow_converted_documents=False,
+):
     attachments = [] if raw_attachments is None else raw_attachments
     if not isinstance(attachments, list):
         raise ValueError("Invalid attachment payload.")
@@ -196,7 +444,12 @@ def normalize_browser_attachments(raw_attachments, max_files, max_file_bytes, ma
         supplied_kind = str(attachment.get("kind") or "").strip().lower()
         if supplied_kind == "file":
             supplied_kind = "text"
-        inferred_kind = "image" if extension in IMAGE_EXTENSIONS else "text"
+        if extension in IMAGE_EXTENSIONS:
+            inferred_kind = "image"
+        elif extension in DOCUMENT_EXTENSIONS:
+            inferred_kind = "document"
+        else:
+            inferred_kind = "text"
         if supplied_kind and supplied_kind != inferred_kind:
             raise ValueError(f"File type does not match filename: {filename}")
         kind = inferred_kind
@@ -204,7 +457,7 @@ def normalize_browser_attachments(raw_attachments, max_files, max_file_bytes, ma
         supplied_mime = attachment.get("mime_type")
         if supplied_mime is None:
             supplied_mime = attachment.get("type")
-        _declared_attachment_size(attachment, filename, max_file_bytes)
+        declared_size = _declared_attachment_size(attachment, filename, max_file_bytes)
 
         if kind == "image":
             expected_mime = IMAGE_EXTENSION_TO_MIME[extension]
@@ -222,6 +475,36 @@ def normalize_browser_attachments(raw_attachments, max_files, max_file_bytes, ma
                 "size": file_size,
                 "data_url": image_data_url(mime_type, data),
             }
+        elif kind == "document":
+            if allow_converted_documents:
+                normalized_attachment = _normalize_stored_document_attachment(
+                    attachment,
+                    filename,
+                    extension,
+                    supplied_mime,
+                    max_file_bytes,
+                )
+            else:
+                expected_mime = DOCUMENT_EXTENSION_TO_MIME[extension]
+                declared_mime = _normalize_mime_type(supplied_mime)
+                accepted_mime_types = DOCUMENT_EXTENSION_TO_ACCEPTED_MIME_TYPES[extension]
+                if declared_mime and declared_mime not in accepted_mime_types.union({"application/octet-stream"}):
+                    raise ValueError(f"Document type does not match filename: {filename}")
+                data = decode_document_base64(attachment.get("data_base64"), max_file_bytes)
+                if declared_size is not None and declared_size != len(data):
+                    raise ValueError(f"Document size does not match its data: {filename}")
+                file_size = len(data)
+                if total_bytes + file_size > max_total_bytes:
+                    raise ValueError("Total attachment size exceeds the configured limit.")
+                normalized_attachment = _normalize_browser_document_attachment(
+                    data,
+                    filename,
+                    extension,
+                    max_file_bytes,
+                )
+                if normalized_attachment["size"] != file_size:
+                    raise ValueError(f"Document size does not match its data: {filename}")
+            file_size = normalized_attachment["size"]
         else:
             content = attachment.get("content")
             if not isinstance(content, str) or not content:
@@ -279,7 +562,10 @@ def parse_attachment_context(raw_context, max_files, max_file_bytes, max_total_b
 
     if not isinstance(payload, dict) or payload.get("type") != ATTACHMENT_ENVELOPE_TYPE:
         return {"format": "legacy", "attachments": [], "legacy_context": raw}
-    if type(payload.get("version")) is not int or payload.get("version") != ATTACHMENT_ENVELOPE_VERSION:
+    if (
+        type(payload.get("version")) is not int
+        or payload.get("version") not in SUPPORTED_ATTACHMENT_ENVELOPE_VERSIONS
+    ):
         raise ValueError("This chat uses an unsupported attachment format.")
     envelope_attachments = payload.get("attachments")
     if not isinstance(envelope_attachments, list):
@@ -290,6 +576,7 @@ def parse_attachment_context(raw_context, max_files, max_file_bytes, max_total_b
         max_files=max_files,
         max_file_bytes=max_file_bytes,
         max_total_bytes=max_total_bytes,
+        allow_converted_documents=True,
     )
     return {"format": "envelope", "attachments": attachments, "legacy_context": None}
 
@@ -331,6 +618,16 @@ def legacy_attachment_metadata(raw_context):
         }
         for name in names
     ]
+
+
+def messages_have_images(messages):
+    for message in messages or []:
+        content = message.get("content") if isinstance(message, dict) else None
+        if isinstance(content, list) and any(
+            isinstance(part, dict) and part.get("type") == "image_url" for part in content
+        ):
+            return True
+    return False
 
 
 def normalize_openai_messages(
@@ -389,9 +686,14 @@ def normalize_openai_messages(
                     raise ValueError(f"A request can contain at most {max_images} images.")
                 if total_image_bytes > max_total_image_bytes:
                     raise ValueError("Total image size exceeds the configured request limit.")
+                normalized_url = (
+                    normalize_image_png_data_url(mime_type, image_data)
+                    if mime_type in MODEL_IMAGE_NORMALIZATION_MIME_TYPES
+                    else image_data_url(mime_type, image_data)
+                )
                 parts.append({
                     "type": "image_url",
-                    "image_url": {"url": image_data_url(mime_type, image_data)},
+                    "image_url": {"url": normalized_url},
                 })
             else:
                 raise ValueError("Only text and image_url content parts are supported.")

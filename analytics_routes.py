@@ -2,10 +2,14 @@ import sqlite3
 import csv
 import io
 import json
+import os
+from pathlib import Path
+import tempfile
 import uuid
 from flask import Blueprint, jsonify, request, Response, session
 from helpers import DB_PATH
-from auth import login_required
+from auth import get_db, login_required
+from runtime_config import get_chat_import_max_mib
 
 analytics_routes = Blueprint('analytics_routes', __name__)
 
@@ -31,30 +35,24 @@ CHAT_INSERT_COLS = [
     "attachment_context",
 ]
 
-# columns we accept from imported files (we ignore id/user_id even if present)
-IMPORT_ALLOWED = [
-    "session_id",
-    "session_name",
-    "timestamp",
-    "user_message",
-    "bot_response",
-    "thoughts",
-    "tps",
-    "response_time",
-    "total_tokens",
-    "prompt_eval_tps",
-    "model_used",
-    "prompt_id",
-    "turn_id",
-    "prompt_version",
-    "response_version",
-    "active_in_chat",
-    "source_row_id",
-    "attachment_context",
-]
+# Chat columns accepted from imported files. Source id/user_id are handled
+# separately for relationship remapping and role-aware ownership.
+IMPORT_ALLOWED = [column for column in CHAT_INSERT_COLS if column != "user_id"]
 
-MAX_IMPORT_FILE_BYTES = 10 * 1024 * 1024
 MAX_IMPORT_ROWS = 25000
+SQLITE_IMPORT_EXTENSIONS = (".sqlite-backup", ".sqlite3", ".sqlite", ".db")
+OWNERSHIP_PRESERVE = "preserve_original_users"
+OWNERSHIP_ASSIGN = "assign_to_me"
+VALID_CONFLICT_MODES = {"append", "overwrite"}
+VALID_OWNERSHIP_MODES = {OWNERSHIP_PRESERVE, OWNERSHIP_ASSIGN}
+MAX_IMPORT_SESSION_ID_CHARS = 128
+SQLITE_HEADER = b"SQLite format 3\x00"
+
+
+class ImportValidationError(ValueError):
+    def __init__(self, message, status_code=400):
+        super().__init__(message)
+        self.status_code = status_code
 
 def _as_int(v, default=None):
     try:
@@ -68,16 +66,18 @@ def _as_float(v, default=None):
     except Exception:
         return default
 
-def _import_limit_error(kind):
+def _import_error(message, status_code=400):
+    return jsonify({"status": "error", "message": message}), status_code
+
+
+def _import_limit_error(kind, max_bytes=None):
     if kind == "size":
-        return jsonify({
-            "status": "error",
-            "message": f"Import file is too large. Maximum size is {MAX_IMPORT_FILE_BYTES // (1024 * 1024)} MB."
-        }), 400
-    return jsonify({
-        "status": "error",
-        "message": f"Import contains too many rows/items. Maximum is {MAX_IMPORT_ROWS}."
-    }), 400
+        return _import_error(
+            f"Import file is too large. Maximum size is {max_bytes // (1024 * 1024)} MiB."
+        )
+    return _import_error(
+        f"Import contains too many rows/items. Maximum is {MAX_IMPORT_ROWS}."
+    )
 
 def _uploaded_file_size(file):
     try:
@@ -100,19 +100,235 @@ def _uploaded_file_size(file):
     except Exception:
         return None
 
-def _read_import_file(file):
+def _read_import_file(file, max_bytes):
     size = _uploaded_file_size(file)
-    if size is not None and size > MAX_IMPORT_FILE_BYTES:
-        return None, _import_limit_error("size")
+    if size is not None and size > max_bytes:
+        return None, _import_limit_error("size", max_bytes)
 
-    raw = file.read(MAX_IMPORT_FILE_BYTES + 1)
-    if len(raw) > MAX_IMPORT_FILE_BYTES:
-        return None, _import_limit_error("size")
+    raw = file.read(max_bytes + 1)
+    if len(raw) > max_bytes:
+        return None, _import_limit_error("size", max_bytes)
 
     try:
         return raw.decode("utf-8"), None
-    except Exception as e:
-        return None, (jsonify({"status": "error", "message": f"File decode failed: {str(e)}"}), 400)
+    except UnicodeDecodeError:
+        return None, _import_error("Import file must contain valid UTF-8 text.")
+
+
+def _is_sqlite_filename(filename):
+    return any(filename.endswith(extension) for extension in SQLITE_IMPORT_EXTENSIONS)
+
+
+def _validate_session_id(value, row_label="Import row"):
+    if not isinstance(value, str):
+        raise ImportValidationError(f"{row_label} has an invalid session ID.")
+    normalized = value.strip()
+    if not normalized or len(normalized) > MAX_IMPORT_SESSION_ID_CHARS:
+        raise ImportValidationError(f"{row_label} has an invalid session ID.")
+    if any(ord(character) < 32 or ord(character) == 127 for character in normalized):
+        raise ImportValidationError(f"{row_label} has an invalid session ID.")
+    return normalized
+
+
+def _positive_source_id(value, field_name, row_label):
+    if isinstance(value, bool):
+        raise ImportValidationError(f"{row_label} has an invalid {field_name}.")
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, str) and value.strip().isdigit():
+        parsed = int(value.strip())
+    else:
+        raise ImportValidationError(f"{row_label} has an invalid {field_name}.")
+    if parsed < 1:
+        raise ImportValidationError(f"{row_label} has an invalid {field_name}.")
+    return parsed
+
+
+def _optional_text(value, field_name, row_label):
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ImportValidationError(f"{row_label} has invalid {field_name}; text is required.")
+    return value
+
+
+def _sqlite_table_names(conn):
+    rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    return {row[0] for row in rows}
+
+
+def _sqlite_table_columns(conn, table_name):
+    if table_name not in {"chats", "projects", "chat_sessions"}:
+        raise ImportValidationError("SQLite backup contains an unsupported structure.")
+    return {row[1] for row in conn.execute(f'PRAGMA table_info("{table_name}")').fetchall()}
+
+
+def _sqlite_rows(conn, table_name, columns, order_by):
+    selected = ", ".join(f'"{column}"' for column in columns)
+    query = f'SELECT {selected} FROM "{table_name}" ORDER BY "{order_by}" ASC'
+    cursor = conn.execute(query)
+    rows = cursor.fetchmany(MAX_IMPORT_ROWS + 1)
+    if len(rows) > MAX_IMPORT_ROWS:
+        raise ImportValidationError(
+            f"Import contains too many rows/items. Maximum is {MAX_IMPORT_ROWS}."
+        )
+    return [dict(row) for row in rows]
+
+
+def _extract_sqlite_source(temp_path):
+    source_uri = Path(temp_path).resolve().as_uri() + "?mode=ro&immutable=1"
+    conn = None
+    try:
+        conn = sqlite3.connect(source_uri, uri=True)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA query_only=ON")
+        conn.execute("PRAGMA trusted_schema=OFF")
+        quick_check = conn.execute("PRAGMA quick_check(1)").fetchone()
+        if not quick_check or str(quick_check[0]).lower() != "ok":
+            raise ImportValidationError("SQLite backup is invalid or unreadable.")
+
+        tables = _sqlite_table_names(conn)
+        if "chats" not in tables:
+            raise ImportValidationError("SQLite backup does not contain a chats table.")
+
+        chat_columns = _sqlite_table_columns(conn, "chats")
+        if not {"id", "session_id", "user_message", "bot_response"}.issubset(chat_columns):
+            raise ImportValidationError("SQLite backup has an incompatible chats table.")
+        supported_chat_columns = [
+            column
+            for column in ["id", "user_id", *IMPORT_ALLOWED]
+            if column in chat_columns
+        ]
+        chats = _sqlite_rows(conn, "chats", supported_chat_columns, "id")
+
+        has_projects = "projects" in tables
+        has_chat_sessions = "chat_sessions" in tables
+        if has_projects != has_chat_sessions:
+            raise ImportValidationError(
+                "SQLite backup contains incomplete Project metadata."
+            )
+
+        projects = []
+        chat_sessions = []
+        has_project_metadata = has_projects and has_chat_sessions
+        if has_project_metadata:
+            required_project_columns = {
+                "id", "user_id", "name", "instructions", "created_at", "updated_at"
+            }
+            required_session_columns = {"user_id", "session_id", "project_id"}
+            project_columns = _sqlite_table_columns(conn, "projects")
+            session_columns = _sqlite_table_columns(conn, "chat_sessions")
+            if not required_project_columns.issubset(project_columns):
+                raise ImportValidationError(
+                    "SQLite backup has an incompatible projects table."
+                )
+            if not required_session_columns.issubset(session_columns):
+                raise ImportValidationError(
+                    "SQLite backup has an incompatible chat_sessions table."
+                )
+            projects = _sqlite_rows(
+                conn,
+                "projects",
+                ["id", "user_id", "name", "instructions", "created_at", "updated_at"],
+                "id",
+            )
+            chat_sessions = _sqlite_rows(
+                conn,
+                "chat_sessions",
+                ["user_id", "session_id", "project_id"],
+                "session_id",
+            )
+
+        return {
+            "chats": chats,
+            "projects": projects,
+            "chat_sessions": chat_sessions,
+            "has_project_metadata": has_project_metadata,
+            "is_sqlite": True,
+        }
+    except ImportValidationError:
+        raise
+    except sqlite3.Error as exc:
+        raise ImportValidationError("SQLite backup is invalid or unreadable.") from exc
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def _read_sqlite_import(file, max_bytes):
+    size = _uploaded_file_size(file)
+    if size is not None and size > max_bytes:
+        return None, _import_limit_error("size", max_bytes)
+
+    temp_path = None
+    try:
+        fd, temp_path = tempfile.mkstemp(prefix="llm-controller-chat-import-", suffix=".sqlite")
+        total = 0
+        header = b""
+        with os.fdopen(fd, "wb") as temp_file:
+            while True:
+                chunk = file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    return None, _import_limit_error("size", max_bytes)
+                if len(header) < len(SQLITE_HEADER):
+                    header += chunk[:len(SQLITE_HEADER) - len(header)]
+                temp_file.write(chunk)
+
+        if header != SQLITE_HEADER:
+            return None, _import_error("Selected file is not a valid SQLite database.")
+        return _extract_sqlite_source(temp_path), None
+    except ImportValidationError as exc:
+        return None, _import_error(str(exc), exc.status_code)
+    except OSError:
+        return None, _import_error("SQLite backup could not be read safely.", 500)
+    finally:
+        if temp_path:
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+
+
+def _parse_import_source(file, filename, is_admin):
+    max_bytes = get_chat_import_max_mib() * 1024 * 1024
+    if _is_sqlite_filename(filename):
+        if not is_admin:
+            return None, _import_error("SQLite backup import is available to administrators only.", 403)
+        return _read_sqlite_import(file, max_bytes)
+
+    if not (filename.endswith(".json") or filename.endswith(".csv")):
+        formats = ".json or .csv" if not is_admin else ".json, .csv, or a supported SQLite backup"
+        return None, _import_error(f"Unsupported file format. Select {formats}.")
+
+    content, error_response = _read_import_file(file, max_bytes)
+    if error_response:
+        return None, error_response
+
+    try:
+        if filename.endswith(".json"):
+            rows = json.loads(content)
+        else:
+            reader = csv.DictReader(io.StringIO(content))
+            rows = []
+            for row_number, row in enumerate(reader, start=1):
+                if row_number > MAX_IMPORT_ROWS:
+                    return None, _import_limit_error("rows")
+                rows.append(row)
+    except (csv.Error, json.JSONDecodeError, UnicodeError):
+        return None, _import_error("Import file could not be parsed as valid JSON or CSV.")
+
+    if isinstance(rows, list) and len(rows) > MAX_IMPORT_ROWS:
+        return None, _import_limit_error("rows")
+    return {
+        "chats": rows,
+        "projects": [],
+        "chat_sessions": [],
+        "has_project_metadata": False,
+        "is_sqlite": False,
+    }, None
 
 def _export_query(conn, user_id=None):
     """
@@ -157,11 +373,6 @@ def _role():
 
 def _is_admin():
     return _role() == "admin"
-
-def _require_admin_json():
-    if not _is_admin():
-        return jsonify({"status": "error", "message": "Not authorized"}), 403
-    return None
 
 @analytics_routes.route('/', methods=['GET'])
 @login_required(roles=["admin", "user"])
@@ -224,6 +435,88 @@ def analytics():
         "avg_response": avg_response,
         "tps_metrics": tps_metrics,
         "tokens_sum": tokens_sum,
+    })
+
+
+@analytics_routes.route('/api', methods=['GET'])
+@login_required(roles=["admin"])
+def api_analytics():
+    per_page = 25
+    page = max(1, _as_int(request.args.get("page"), 1))
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    c.execute("""
+        SELECT
+            COUNT(*) AS api_requests,
+            SUM(CASE WHEN endpoint = '/v1/chat/completions' THEN 1 ELSE 0 END) AS completion_requests,
+            SUM(CASE
+                WHEN LOWER(TRIM(status)) <> 'completed'
+                  OR COALESCE(http_status, 0) >= 400
+                THEN 1 ELSE 0
+            END) AS errors,
+            SUM(total_tokens) AS recorded_tokens,
+            AVG(CASE
+                WHEN endpoint = '/v1/chat/completions' AND duration IS NOT NULL
+                THEN duration
+            END) AS avg_completion_time
+        FROM request_events
+        WHERE source = 'api'
+    """)
+    summary_row = c.fetchone()
+    total_requests = int(summary_row[0] or 0) if summary_row else 0
+    total_pages = max(1, (total_requests + per_page - 1) // per_page)
+    page = min(page, total_pages)
+
+    c.execute("""
+        SELECT
+            timestamp,
+            endpoint,
+            requested_model,
+            active_model,
+            status,
+            http_status,
+            duration,
+            streaming,
+            total_tokens
+        FROM request_events
+        WHERE source = 'api'
+        ORDER BY timestamp DESC, id DESC
+        LIMIT ? OFFSET ?
+    """, (per_page, (page - 1) * per_page))
+    recent_rows = c.fetchall()
+    conn.close()
+
+    recorded_tokens = summary_row[3] if summary_row else None
+    avg_completion_time = summary_row[4] if summary_row else None
+    return jsonify({
+        "summary": {
+            "api_requests": total_requests,
+            "completion_requests": int(summary_row[1] or 0) if summary_row else 0,
+            "errors": int(summary_row[2] or 0) if summary_row else 0,
+            "recorded_tokens": int(recorded_tokens) if recorded_tokens is not None else None,
+            "avg_completion_time": float(avg_completion_time) if avg_completion_time is not None else None,
+        },
+        "pagination": {
+            "page": page,
+            "per_page": per_page,
+            "total": total_requests,
+            "total_pages": total_pages,
+        },
+        "recent": [
+            {
+                "timestamp": row[0],
+                "endpoint": row[1],
+                "requested_model": row[2],
+                "active_model": row[3],
+                "status": row[4],
+                "http_status": row[5],
+                "duration": row[6],
+                "streaming": bool(row[7]),
+                "total_tokens": row[8],
+            }
+            for row in recent_rows
+        ],
     })
 
 
@@ -291,76 +584,369 @@ def export_chats():
     return jsonify({"status": "error", "message": "Unsupported export format"}), 400
 
 
+def _resolve_import_ownership_mode(is_admin):
+    submitted = (request.form.get("ownership_mode") or "").strip().lower()
+    if not is_admin:
+        if submitted and submitted != OWNERSHIP_ASSIGN:
+            raise ImportValidationError(
+                "Preserving source ownership is available to administrators only.",
+                403,
+            )
+        return OWNERSHIP_ASSIGN
+
+    ownership_mode = submitted or OWNERSHIP_PRESERVE
+    if ownership_mode not in VALID_OWNERSHIP_MODES:
+        raise ImportValidationError("Invalid import ownership mode.")
+    return ownership_mode
+
+
+def _normalize_import_chats(source_rows, ownership_mode, current_user_id):
+    if not isinstance(source_rows, list) or not source_rows:
+        raise ImportValidationError("No chats to import.")
+    if len(source_rows) > MAX_IMPORT_ROWS:
+        raise ImportValidationError(
+            f"Import contains too many rows/items. Maximum is {MAX_IMPORT_ROWS}."
+        )
+
+    normalized = []
+    required_user_ids = set()
+    seen_import_ids = set()
+    text_fields = {
+        "session_name",
+        "user_message",
+        "bot_response",
+        "thoughts",
+        "model_used",
+        "prompt_id",
+        "turn_id",
+        "attachment_context",
+    }
+
+    for row_number, chat in enumerate(source_rows, start=1):
+        row_label = f"Import row {row_number}"
+        if not isinstance(chat, dict):
+            raise ImportValidationError(f"{row_label} is not a valid chat record.")
+
+        session_id = _validate_session_id(chat.get("session_id"), row_label)
+        source_user_id = None
+        raw_source_user_id = chat.get("user_id")
+        if ownership_mode == OWNERSHIP_PRESERVE:
+            try:
+                source_user_id = _positive_source_id(
+                    raw_source_user_id,
+                    "source user ID",
+                    row_label,
+                )
+            except ImportValidationError as exc:
+                raise ImportValidationError(
+                    f"{exc} Use Assign to my account if reassignment is intentional."
+                ) from exc
+            target_user_id = source_user_id
+            required_user_ids.add(source_user_id)
+        else:
+            parsed_source_user_id = _as_int(raw_source_user_id, None)
+            source_user_id = parsed_source_user_id if parsed_source_user_id and parsed_source_user_id > 0 else None
+            target_user_id = current_user_id
+
+        row = {"session_id": session_id}
+        for key in IMPORT_ALLOWED:
+            if key == "session_id" or key not in chat:
+                continue
+            value = chat.get(key)
+            row[key] = _optional_text(value, key, row_label) if key in text_fields else value
+
+        import_row_id = None
+        if chat.get("id") not in (None, ""):
+            import_row_id = _positive_source_id(chat.get("id"), "source row ID", row_label)
+            import_id_key = (target_user_id, import_row_id)
+            if import_id_key in seen_import_ids:
+                raise ImportValidationError(
+                    f"{row_label} duplicates a source row ID for the same target owner."
+                )
+            seen_import_ids.add(import_id_key)
+
+        if row.get("source_row_id") not in (None, ""):
+            row["source_row_id"] = _positive_source_id(
+                row.get("source_row_id"),
+                "source relationship ID",
+                row_label,
+            )
+
+        row["_import_row_id"] = import_row_id
+        row["_source_user_id"] = source_user_id
+        row["_target_user_id"] = target_user_id
+        normalized.append(row)
+
+    return normalized, required_user_ids
+
+
+def _normalize_sqlite_metadata(source, normalized_chats, ownership_mode, current_user_id):
+    if not source.get("has_project_metadata"):
+        return {}, {}, set()
+
+    projects = {}
+    required_user_ids = set()
+    for row_number, project in enumerate(source.get("projects") or [], start=1):
+        row_label = f"Source Project {row_number}"
+        source_project_id = _positive_source_id(project.get("id"), "Project ID", row_label)
+        source_user_id = _positive_source_id(project.get("user_id"), "owner ID", row_label)
+        source_key = (source_user_id, source_project_id)
+        if source_key in projects:
+            raise ImportValidationError(f"{row_label} duplicates a Project ID.")
+
+        name = project.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ImportValidationError(f"{row_label} has an invalid name.")
+        instructions = project.get("instructions")
+        if instructions is not None and not isinstance(instructions, str):
+            raise ImportValidationError(f"{row_label} has invalid instructions.")
+        created_at = _as_int(project.get("created_at"), None)
+        updated_at = _as_int(project.get("updated_at"), None)
+        if created_at is None or updated_at is None:
+            raise ImportValidationError(f"{row_label} has invalid timestamps.")
+
+        target_user_id = source_user_id if ownership_mode == OWNERSHIP_PRESERVE else current_user_id
+        if ownership_mode == OWNERSHIP_PRESERVE:
+            required_user_ids.add(source_user_id)
+        projects[source_key] = {
+            "source_key": source_key,
+            "source_user_id": source_user_id,
+            "target_user_id": target_user_id,
+            "name": name,
+            "instructions": instructions,
+            "created_at": created_at,
+            "updated_at": updated_at,
+        }
+
+    source_chat_pairs = set()
+    target_pairs_by_source = {}
+    for chat in normalized_chats:
+        source_user_id = chat.get("_source_user_id")
+        if source_user_id is None:
+            raise ImportValidationError(
+                "SQLite Project metadata cannot be matched because a chat has no valid source user ID."
+            )
+        source_pair = (source_user_id, chat["session_id"])
+        target_pair = (chat["_target_user_id"], chat["session_id"])
+        source_chat_pairs.add(source_pair)
+        target_pairs_by_source[source_pair] = target_pair
+
+    source_associations = {}
+    for row_number, metadata in enumerate(source.get("chat_sessions") or [], start=1):
+        row_label = f"Source conversation metadata row {row_number}"
+        source_user_id = _positive_source_id(metadata.get("user_id"), "owner ID", row_label)
+        session_id = _validate_session_id(metadata.get("session_id"), row_label)
+        source_pair = (source_user_id, session_id)
+        if source_pair in source_associations:
+            raise ImportValidationError(f"{row_label} duplicates conversation metadata.")
+
+        raw_project_id = metadata.get("project_id")
+        project_key = None
+        if raw_project_id not in (None, ""):
+            source_project_id = _positive_source_id(raw_project_id, "Project ID", row_label)
+            project_key = (source_user_id, source_project_id)
+            project = projects.get(project_key)
+            if project is None:
+                raise ImportValidationError(
+                    f"{row_label} references a missing Project or mismatched Project owner."
+                )
+        if ownership_mode == OWNERSHIP_PRESERVE:
+            required_user_ids.add(source_user_id)
+        source_associations[source_pair] = project_key
+
+    target_associations = {}
+    for source_pair in source_chat_pairs:
+        target_pair = target_pairs_by_source[source_pair]
+        project_key = source_associations.get(source_pair)
+        if target_pair in target_associations and target_associations[target_pair] != project_key:
+            raise ImportValidationError(
+                f"Imported conversation {target_pair[1]} has conflicting Project associations for target user {target_pair[0]}."
+            )
+        target_associations[target_pair] = project_key
+
+    return projects, target_associations, required_user_ids
+
+
+def _validate_source_users(user_ids):
+    if not user_ids:
+        return
+    db = get_db()
+    if db is None:
+        raise ImportValidationError("Source users could not be verified.", 503)
+
+    cursor = None
+    try:
+        cursor = db.cursor()
+        ordered_ids = sorted(user_ids)
+        existing_ids = set()
+        for offset in range(0, len(ordered_ids), 500):
+            batch = ordered_ids[offset:offset + 500]
+            placeholders = ", ".join(["%s"] * len(batch))
+            cursor.execute(
+                f"SELECT id FROM llm_users WHERE id IN ({placeholders})",
+                tuple(batch),
+            )
+            existing_ids.update(int(row[0]) for row in cursor.fetchall())
+    except Exception as exc:
+        raise ImportValidationError("Source users could not be verified.", 503) from exc
+    finally:
+        if cursor is not None:
+            try:
+                cursor.close()
+            except Exception:
+                pass
+
+    missing_ids = sorted(user_ids - existing_ids)
+    if missing_ids:
+        display_ids = ", ".join(str(user_id) for user_id in missing_ids[:10])
+        suffix = "..." if len(missing_ids) > 10 else ""
+        raise ImportValidationError(
+            f"Source user no longer exists: {display_ids}{suffix}. No changes were made."
+        )
+
+
+def _preflight_project_conflicts(cursor, target_associations, projects):
+    reused_project_ids = {}
+    reused_destination_ids = {}
+    for (target_user_id, session_id), source_project_key in sorted(target_associations.items()):
+        cursor.execute(
+            "SELECT project_id FROM chat_sessions WHERE user_id=? AND session_id=?",
+            (target_user_id, session_id),
+        )
+        metadata_row = cursor.fetchone()
+        existing_project_id = metadata_row[0] if metadata_row else None
+        if existing_project_id is None:
+            continue
+        if source_project_key is None:
+            raise ImportValidationError(
+                f"Conversation {session_id} for user {target_user_id} already has a conflicting Project association."
+            )
+
+        source_project = projects[source_project_key]
+        cursor.execute(
+            """
+            SELECT id, user_id, name, instructions, created_at, updated_at
+              FROM projects
+             WHERE id=?
+            """,
+            (existing_project_id,),
+        )
+        existing_project = cursor.fetchone()
+        expected = (
+            target_user_id,
+            source_project["name"],
+            source_project["instructions"],
+            source_project["created_at"],
+            source_project["updated_at"],
+        )
+        if not existing_project or tuple(existing_project[1:]) != expected:
+            raise ImportValidationError(
+                f"Conversation {session_id} for user {target_user_id} already has a conflicting Project association."
+            )
+
+        mapped_id = reused_project_ids.get(source_project_key)
+        mapped_source = reused_destination_ids.get(existing_project_id)
+        if (mapped_id is not None and mapped_id != existing_project_id) or (
+            mapped_source is not None and mapped_source != source_project_key
+        ):
+            raise ImportValidationError(
+                f"Conversation {session_id} for user {target_user_id} has ambiguous Project metadata."
+            )
+        reused_project_ids[source_project_key] = existing_project_id
+        reused_destination_ids[existing_project_id] = source_project_key
+    return reused_project_ids
+
+
+def _insert_import_projects(cursor, projects, reused_project_ids):
+    project_id_map = dict(reused_project_ids)
+    for source_project_key, project in sorted(projects.items()):
+        if source_project_key in project_id_map:
+            continue
+        cursor.execute(
+            """
+            INSERT INTO projects (user_id, name, instructions, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                project["target_user_id"],
+                project["name"],
+                project["instructions"],
+                project["created_at"],
+                project["updated_at"],
+            ),
+        )
+        project_id_map[source_project_key] = cursor.lastrowid
+    return project_id_map
+
+
 @analytics_routes.route('/import_chats', methods=['POST'])
 @login_required(roles=["admin", "user"])
 def import_chats():
-    user_id = session.get("user_id")
+    user_id = _as_int(session.get("user_id"), None)
+    is_admin = _is_admin()
     conflict = (request.form.get("conflict_resolution", "append") or "append").lower().strip()
+    if conflict not in VALID_CONFLICT_MODES:
+        return _import_error("Invalid conflict-resolution mode.")
+    try:
+        ownership_mode = _resolve_import_ownership_mode(is_admin)
+    except ImportValidationError as exc:
+        return _import_error(str(exc), exc.status_code)
+
     file = request.files.get("import_file")
     if not file:
-        return jsonify({"status": "error", "message": "No file provided"}), 400
+        return _import_error("No file provided.")
 
     filename = (file.filename or "").lower()
-    content, limit_response = _read_import_file(file)
-    if limit_response:
-        return limit_response
+    source, source_error = _parse_import_source(file, filename, is_admin)
+    if source_error:
+        return source_error
 
-    imported = []
     try:
-        if filename.endswith(".json"):
-            imported = json.loads(content)
-        elif filename.endswith(".csv"):
-            f = io.StringIO(content)
-            reader = csv.DictReader(f)
-            imported = []
-            for row_number, row in enumerate(reader, start=1):
-                if row_number > MAX_IMPORT_ROWS:
-                    return _import_limit_error("rows")
-                imported.append(row)
-        else:
-            return jsonify({"status": "error", "message": "Unsupported file format (must be .json or .csv)"}), 400
-    except Exception as e:
-        return jsonify({"status": "error", "message": f"File parse error: {str(e)}"}), 400
+        normalized, required_user_ids = _normalize_import_chats(
+            source.get("chats"),
+            ownership_mode,
+            user_id,
+        )
+        projects, target_associations, project_user_ids = _normalize_sqlite_metadata(
+            source,
+            normalized,
+            ownership_mode,
+            user_id,
+        )
+        required_user_ids.update(project_user_ids)
+        if ownership_mode == OWNERSHIP_PRESERVE:
+            _validate_source_users(required_user_ids)
+    except ImportValidationError as exc:
+        return _import_error(str(exc), exc.status_code)
 
-    if isinstance(imported, list) and len(imported) > MAX_IMPORT_ROWS:
-        return _import_limit_error("rows")
-
-    if not isinstance(imported, list) or not imported:
-        return jsonify({"status": "error", "message": "No chats to import."}), 400
-
-    # Normalize: keep only allowed keys; FORCE user_id=current user
-    normalized = []
-    for chat in imported:
-        if not isinstance(chat, dict):
-            continue
-        row = {}
-        for k in IMPORT_ALLOWED:
-            if k in chat:
-                row[k] = chat.get(k)
-        sid = (row.get("session_id") or "").strip()
-        if not sid:
-            continue
-        row["session_id"] = sid
-        row["_import_row_id"] = _as_int(chat.get("id"), None)
-        normalized.append(row)
-
-    if not normalized:
-        return jsonify({"status": "error", "message": "No valid chat rows found in file."}), 400
-
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
+    conn = None
     try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("BEGIN IMMEDIATE")
+        reused_project_ids = {}
+        if source.get("has_project_metadata"):
+            reused_project_ids = _preflight_project_conflicts(c, target_associations, projects)
+
+        target_pairs = sorted({
+            (row["_target_user_id"], row["session_id"])
+            for row in normalized
+        })
         if conflict == "overwrite":
-            # Delete only THIS user's sessions that appear in the import
-            sessions = sorted({(r.get("session_id") or "").strip() for r in normalized if r.get("session_id")})
-            for sid in sessions:
-                c.execute("DELETE FROM chats WHERE user_id=? AND session_id=?", (user_id, sid))
+            for target_user_id, session_id in target_pairs:
+                c.execute(
+                    "DELETE FROM chats WHERE user_id=? AND session_id=?",
+                    (target_user_id, session_id),
+                )
 
-        # Insert rows (ignore incoming id/user_id), then remap source_row_id only
-        # when the imported source row exists in this same import batch.
+        project_id_map = {}
+        if source.get("has_project_metadata"):
+            project_id_map = _insert_import_projects(c, projects, reused_project_ids)
+
         imported_row_id_map = {}
         pending_source_links = []
         for row in normalized:
+            target_user_id = row["_target_user_id"]
             ts = _as_int(row.get("timestamp"), None)
             tps = _as_float(row.get("tps"), None)
             rt  = _as_float(row.get("response_time"), None)
@@ -399,7 +985,7 @@ def import_chats():
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    user_id,
+                    target_user_id,
                     row.get("session_id"),
                     row.get("session_name"),
                     ts,
@@ -424,27 +1010,65 @@ def import_chats():
             new_row_id = c.lastrowid
             import_row_id = _as_int(row.get("_import_row_id"), None)
             if import_row_id is not None:
-                imported_row_id_map[import_row_id] = new_row_id
+                imported_row_id_map[(target_user_id, import_row_id)] = new_row_id
             if src_row_id is not None:
-                pending_source_links.append((new_row_id, src_row_id))
+                pending_source_links.append((new_row_id, target_user_id, src_row_id))
 
-        for local_row_id, imported_source_row_id in pending_source_links:
-            remapped_source_row_id = imported_row_id_map.get(imported_source_row_id)
+        for local_row_id, target_user_id, imported_source_row_id in pending_source_links:
+            remapped_source_row_id = imported_row_id_map.get(
+                (target_user_id, imported_source_row_id)
+            )
             if remapped_source_row_id is None:
                 continue
             c.execute(
                 "UPDATE chats SET source_row_id=? WHERE id=? AND user_id=?",
-                (remapped_source_row_id, local_row_id, user_id),
+                (remapped_source_row_id, local_row_id, target_user_id),
             )
 
-        conn.commit()
-    except Exception as e:
-        conn.rollback()
-        conn.close()
-        return jsonify({"status": "error", "message": f"Database error: {str(e)}"}), 500
+        if source.get("has_project_metadata"):
+            for (target_user_id, session_id), source_project_key in sorted(target_associations.items()):
+                destination_project_id = (
+                    project_id_map[source_project_key]
+                    if source_project_key is not None
+                    else None
+                )
+                c.execute(
+                    """
+                    INSERT INTO chat_sessions (user_id, session_id, project_id)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(user_id, session_id) DO UPDATE SET
+                        project_id=excluded.project_id
+                    """,
+                    (target_user_id, session_id, destination_project_id),
+                )
+        else:
+            for target_user_id, session_id in target_pairs:
+                c.execute(
+                    """
+                    INSERT OR IGNORE INTO chat_sessions (user_id, session_id, project_id)
+                    VALUES (?, ?, NULL)
+                    """,
+                    (target_user_id, session_id),
+                )
 
-    conn.close()
-    return jsonify({"status": "success", "imported": len(normalized)})
+        conn.commit()
+    except ImportValidationError as exc:
+        if conn is not None:
+            conn.rollback()
+        return _import_error(str(exc), exc.status_code)
+    except Exception:
+        if conn is not None:
+            conn.rollback()
+        return _import_error("Chat history import could not be completed.", 500)
+    finally:
+        if conn is not None:
+            conn.close()
+
+    return jsonify({
+        "status": "success",
+        "imported": len(normalized),
+        "ownership_mode": ownership_mode,
+    })
 
 
 @analytics_routes.route('/delete_all_chats', methods=['POST'])
@@ -454,6 +1078,7 @@ def delete_all_chats():
     user_id = session.get("user_id")
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
+    c.execute("DELETE FROM chat_sessions WHERE user_id=?", (user_id,))
     c.execute("DELETE FROM chats WHERE user_id=?", (user_id,))
     conn.commit()
     conn.close()
@@ -515,6 +1140,7 @@ def admin_delete_user_chats():
 
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
+    c.execute("DELETE FROM chat_sessions WHERE user_id=?", (uid,))
     c.execute("DELETE FROM chats WHERE user_id=?", (uid,))
     deleted = c.rowcount
     conn.commit()
@@ -527,6 +1153,7 @@ def admin_delete_user_chats():
 def admin_delete_all_chats():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
+    c.execute("DELETE FROM chat_sessions")
     c.execute("DELETE FROM chats")
     deleted = c.rowcount
     conn.commit()

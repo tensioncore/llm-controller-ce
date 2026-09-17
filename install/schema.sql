@@ -182,6 +182,18 @@ CREATE TABLE IF NOT EXISTS `llm_users` (
 -- --------------------------------------------------------
 
 --
+-- Table structure for table `llm_user_preferences`
+--
+
+CREATE TABLE IF NOT EXISTS `llm_user_preferences` (
+  `user_id` int NOT NULL,
+  `system_instructions` text DEFAULT NULL,
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- --------------------------------------------------------
+
+--
 -- Table structure for table `login_attempts`
 --
 
@@ -265,6 +277,12 @@ ALTER TABLE `llm_users`
   ADD KEY `idx_llm_users_pending_email` (`pending_email`);
 
 --
+-- Indexes for table `llm_user_preferences`
+--
+ALTER TABLE `llm_user_preferences`
+  ADD PRIMARY KEY (`user_id`);
+
+--
 -- Indexes for table `login_attempts`
 --
 ALTER TABLE `login_attempts`
@@ -346,6 +364,12 @@ ALTER TABLE `llm_benchmark_runs`
   ADD CONSTRAINT `fk_runs_model` FOREIGN KEY (`model_id`) REFERENCES `llm_benchmark_models` (`id`) ON DELETE CASCADE,
   ADD CONSTRAINT `fk_runs_profile` FOREIGN KEY (`profile_id`) REFERENCES `llm_benchmark_profiles` (`id`) ON DELETE RESTRICT,
   ADD CONSTRAINT `fk_runs_promptset` FOREIGN KEY (`prompt_set_id`) REFERENCES `llm_benchmark_prompt_sets` (`id`) ON DELETE RESTRICT;
+
+--
+-- Constraints for table `llm_user_preferences`
+--
+ALTER TABLE `llm_user_preferences`
+  ADD CONSTRAINT `fk_llm_user_preferences_user` FOREIGN KEY (`user_id`) REFERENCES `llm_users` (`id`) ON DELETE CASCADE;
 COMMIT;
 
 /*!40101 SET CHARACTER_SET_CLIENT=@OLD_CHARACTER_SET_CLIENT */;

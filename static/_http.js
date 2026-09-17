@@ -1,4 +1,4 @@
-/* /core/_http.js
+/* /static/_http.js
    Shared request and small utility helpers.
 */
 

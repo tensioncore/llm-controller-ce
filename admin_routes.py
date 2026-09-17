@@ -33,6 +33,8 @@ def _purge_user_chats(user_id: int) -> int:
     conn = sqlite3.connect(DB_PATH)
     try:
         cursor = conn.cursor()
+        cursor.execute("DELETE FROM chat_sessions WHERE user_id=?", (user_id,))
+        cursor.execute("DELETE FROM projects WHERE user_id=?", (user_id,))
         cursor.execute("DELETE FROM chats WHERE user_id=?", (user_id,))
         deleted_rows = cursor.rowcount
         conn.commit()

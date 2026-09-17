@@ -4,6 +4,7 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 
 const CHAT_PREFIX       = '/chat';
+const PROJECTS_PREFIX   = '/projects';
 window.MODEL_PREFIX = '/model';
 const SETTINGS_PREFIX   = '/settings';
 const ANALYTICS_PREFIX  = '/analytics';
@@ -129,6 +130,11 @@ let fixedLayoutMetricsQueued = false;
 let socketJoinedChatSessionId = null;
 const STALE_PAGE_PROMPT_DRAFT_KEY = "llmcontroller.pendingPromptDraft";
 let chatHistorySessions = [];
+let projectRecords = [];
+let activeProjectFilter = "all";
+let editingProjectId = null;
+let assigningProjectSessionId = null;
+let projectModalPreviousFocus = null;
 let initialUrlSessionHandled = false;
 
 const SUPPORTED_ATTACHMENT_EXTENSIONS = [
@@ -136,13 +142,32 @@ const SUPPORTED_ATTACHMENT_EXTENSIONS = [
   ".yaml", ".yml", ".csv", ".log", ".ini", ".cfg", ".bat", ".ps1", ".sh",
   ".sql", ".php", ".java", ".c", ".cpp", ".h", ".cs", ".go", ".rs"
 ];
-const SUPPORTED_IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp"];
-const SUPPORTED_IMAGE_MIME_TYPES = ["image/png", "image/jpeg", "image/webp"];
+const SUPPORTED_IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp", ".gif", ".heic", ".heif", ".avif", ".tif", ".tiff", ".bmp"];
+const SUPPORTED_IMAGE_MIME_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif", "image/heif", "image/avif", "image/tiff", "image/bmp"];
+const PNG_PREVIEW_MIME_TYPES = ["image/tiff", "image/heif"];
+const IMAGE_MIME_ALIASES = {
+  "image/heic": "image/heif",
+  "image/heic-sequence": "image/heif",
+  "image/heif-sequence": "image/heif",
+  "image/x-tiff": "image/tiff",
+  "image/x-bmp": "image/bmp",
+  "image/x-ms-bmp": "image/bmp"
+};
+const SUPPORTED_DOCUMENT_EXTENSIONS = [
+  ".pdf",
+  ".docx", ".dotx", ".docm", ".dotm",
+  ".pptx", ".potx", ".ppsx", ".pptm", ".potm", ".ppsm",
+  ".xlsx", ".xlsm",
+  ".odt", ".ott", ".ods", ".ots", ".odp", ".otp",
+  ".epub", ".eml", ".msg", ".adoc", ".asciidoc", ".tex", ".latex",
+  ".boxnote", ".vtt", ".pages", ".nxml", ".xbrl", ".dclg", ".dclx"
+];
 let MAX_ATTACHMENT_FILES = 8;
 let MAX_ATTACHMENT_FILE_BYTES = 1048576;
 let MAX_ATTACHMENT_TOTAL_BYTES = 4194304;
 const SOCKET_SEND_MAX_BYTES = 10 * 1024 * 1024;
-const MAX_IMAGE_RAW_TRANSPORT_BYTES = Math.floor((SOCKET_SEND_MAX_BYTES - (512 * 1024)) * 3 / 4);
+const SOCKET_SEND_RESERVE_BYTES = 512 * 1024;
+const MAX_BINARY_RAW_TRANSPORT_BYTES = Math.floor((SOCKET_SEND_MAX_BYTES - SOCKET_SEND_RESERVE_BYTES) * 3 / 4);
 
 function savePromptDraftForReload(promptText) {
   const text = String(promptText || "").trim();
@@ -468,7 +493,8 @@ function parseIntSettingValue(value, fallback, minValue = 0) {
 }
 
 function isSupportedImageDataUrl(value) {
-  return /^data:image\/(?:png|jpeg|webp);base64,[a-z0-9+/_=-]+$/i.test(String(value || ""));
+  const match = /^data:(image\/[a-z0-9-]+);base64,[a-z0-9+/_=-]+$/i.exec(String(value || ""));
+  return Boolean(match && SUPPORTED_IMAGE_MIME_TYPES.includes(normalizeImageMimeType(match[1])));
 }
 
 function safeAttachmentBrowserUrl(value, options = {}) {
@@ -489,11 +515,14 @@ function normalizeDisplayAttachments(attachments) {
     if (!attachment || typeof attachment !== "object") return null;
 
     const name = String(attachment.name || attachment.filename || `Attachment ${index + 1}`).trim();
-    const mimeType = String(attachment.mime_type || attachment.mimeType || attachment.type || "").toLowerCase();
+    const mimeType = normalizeImageMimeType(attachment.mime_type || attachment.mimeType || attachment.type);
     const extension = getAttachmentExtension(name);
-    const kind = String(attachment.kind || "").toLowerCase() === "image" ||
+    const declaredKind = String(attachment.kind || "").toLowerCase();
+    const kind = declaredKind === "image" ||
       mimeType.startsWith("image/") || SUPPORTED_IMAGE_EXTENSIONS.includes(extension)
       ? "image"
+      : declaredKind === "document" || SUPPORTED_DOCUMENT_EXTENSIONS.includes(extension)
+        ? "document"
       : "file";
     const numericSize = Number(attachment.size);
     const imageUrl = safeAttachmentBrowserUrl(
@@ -513,6 +542,58 @@ function normalizeDisplayAttachments(attachments) {
       index
     };
   }).filter(Boolean);
+}
+
+async function loadAttachmentPngPreview(attachment) {
+  const existing = String(attachment.previewUrl || attachment.preview_url || "");
+  if (existing.startsWith("data:image/png;base64,") && isSupportedImageDataUrl(existing)) return existing;
+  if (attachment.previewError) throw new Error(attachment.previewError);
+  if (attachment.previewRequest) return attachment.previewRequest;
+
+  // Share only the in-flight request across rerenders; the result stays in display state.
+  attachment.previewRequest = (async () => {
+    let dataUrl = String(attachment.data_url || attachment.dataUrl || "");
+    if (!dataUrl && attachment.file) dataUrl = await readFileAsDataUrl(attachment.file);
+    dataUrl = canonicalizeImageDataUrlMime(dataUrl, attachment.mimeType || attachment.mime_type);
+    const result = await window.ApiHttp.postJSONRequest(
+      `${CHAT_PREFIX}/attachment_preview`,
+      { data_url: dataUrl },
+      {
+        cache: "no-store",
+        onSessionExpired: () => savePromptDraftForReload(document.getElementById("chatInput")?.value || "")
+      },
+      "The image preview could not be generated."
+    );
+    const previewUrl = String(result.preview_url || "");
+    if (!previewUrl.startsWith("data:image/png;base64,") || !isSupportedImageDataUrl(previewUrl)) {
+      throw new Error("The image preview could not be generated.");
+    }
+    releaseAttachmentPreview(attachment);
+    attachment.previewUrl = previewUrl;
+    return previewUrl;
+  })().catch((err) => {
+    attachment.previewError = "The image preview could not be generated.";
+    throw err;
+  }).finally(() => {
+    delete attachment.previewRequest;
+  });
+  return attachment.previewRequest;
+}
+
+function setAttachmentPreviewSource(image, attachment, source) {
+  if (!PNG_PREVIEW_MIME_TYPES.includes(normalizeImageMimeType(attachment.mimeType || attachment.mime_type))) {
+    image.src = source;
+    return;
+  }
+  loadAttachmentPngPreview(attachment).then((previewUrl) => {
+    attachment.previewUrl = previewUrl;
+    image.src = previewUrl;
+  }).catch(() => {
+    attachment.previewError = "The image preview could not be generated.";
+    image.dispatchEvent(new Event("error"));
+  }).finally(() => {
+    delete attachment.previewRequest;
+  });
 }
 
 function renderMessageAttachments(bubble, attachments) {
@@ -543,7 +624,7 @@ function renderMessageAttachments(bubble, attachments) {
     if (attachment.kind === "image" && attachment.imageUrl) {
       const image = document.createElement("img");
       image.className = "turn-attachment-thumbnail";
-      image.src = attachment.imageUrl;
+      setAttachmentPreviewSource(image, attachment, attachment.imageUrl);
       image.alt = attachment.name;
       image.loading = "lazy";
       image.setAttribute("role", "button");
@@ -553,7 +634,7 @@ function renderMessageAttachments(bubble, attachments) {
       const openViewer = (event) => {
         event.preventDefault();
         event.stopPropagation();
-        openImageAttachmentViewer(attachment.imageUrl, attachment.name);
+        openImageAttachmentViewer(image.getAttribute("src"), attachment.name);
       };
       image.addEventListener("click", openViewer);
       image.addEventListener("keydown", (event) => {
@@ -566,6 +647,15 @@ function renderMessageAttachments(bubble, attachments) {
     label.className = "turn-attachment-name";
     label.innerText = attachment.name;
     chip.appendChild(label);
+    const thumbnail = chip.querySelector("img");
+    if (thumbnail) thumbnail.addEventListener("error", () => {
+      thumbnail.remove();
+      const notice = document.createElement("span");
+      notice.className = "turn-attachment-name";
+      notice.textContent = "Preview unavailable";
+      chip.appendChild(notice);
+      chip.title = `${attachment.name}: ${attachment.previewError || "preview unavailable in this browser"}`;
+    }, { once: true });
     list.appendChild(chip);
   });
 
@@ -678,11 +768,26 @@ function renderComposerAttachments() {
     const chip = document.createElement("div");
     chip.className = `attachment-chip ${attachment.kind === "image" ? "is-image" : "is-file"}`;
 
-    if (attachment.kind === "image" && attachment.previewUrl) {
+    if (attachment.kind === "image" && (attachment.previewUrl || PNG_PREVIEW_MIME_TYPES.includes(attachment.mimeType))) {
       const thumbnail = document.createElement("img");
       thumbnail.className = "attachment-chip-thumbnail";
-      thumbnail.src = attachment.previewUrl;
+      setAttachmentPreviewSource(thumbnail, attachment, attachment.previewUrl);
       thumbnail.alt = "";
+      if (PNG_PREVIEW_MIME_TYPES.includes(attachment.mimeType)) {
+        thumbnail.setAttribute("role", "button");
+        thumbnail.setAttribute("tabindex", "0");
+        thumbnail.setAttribute("aria-label", `Open image ${attachment.name}`);
+        thumbnail.title = "Open image viewer";
+        thumbnail.addEventListener("click", () => {
+          openImageAttachmentViewer(thumbnail.getAttribute("src"), attachment.name);
+        });
+        thumbnail.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            openImageAttachmentViewer(thumbnail.getAttribute("src"), attachment.name);
+          }
+        });
+      }
       chip.appendChild(thumbnail);
     }
 
@@ -698,6 +803,12 @@ function renderComposerAttachments() {
       : (getAttachmentExtension(attachment.name).replace(".", "").toUpperCase() || "FILE");
     meta.innerText = [typeLabel, formatAttachmentSize(attachment.size)].filter(Boolean).join(" · ");
     chip.appendChild(meta);
+    const thumbnail = chip.querySelector("img");
+    if (thumbnail) thumbnail.addEventListener("error", () => {
+      thumbnail.remove();
+      meta.append(" (no preview)");
+      chip.title = `${attachment.name}: ${attachment.previewError || "preview unavailable in this browser"}`;
+    }, { once: true });
 
     const removeBtn = document.createElement("button");
     removeBtn.type = "button";
@@ -751,12 +862,15 @@ function loadComposerAttachmentsFromRecords(records) {
         lastModified: null,
         kind: "image",
         mimeType: attachment.mimeType || dataUrl.slice(5, dataUrl.indexOf(";")),
-        previewUrl: dataUrl,
+        previewUrl: attachment.imageUrl || dataUrl,
+        previewRequest: attachment.previewRequest,
         dataUrl,
         file: null
       });
       return;
     }
+
+    if (attachment.kind === "document") return;
 
     if (typeof attachment.content !== "string") return;
     hydrated.push({
@@ -859,10 +973,20 @@ function sanitizeBrowserAttachmentName(value) {
   return basename.slice(0, 255);
 }
 
+function normalizeImageMimeType(value) {
+  const mime = String(value || "").trim().toLowerCase();
+  return IMAGE_MIME_ALIASES[mime] || mime;
+}
+
 function imageExtensionForMime(mimeType) {
   if (mimeType === "image/png") return ".png";
   if (mimeType === "image/jpeg") return ".jpg";
   if (mimeType === "image/webp") return ".webp";
+  if (mimeType === "image/gif") return ".gif";
+  if (mimeType === "image/heif") return ".heif";
+  if (mimeType === "image/avif") return ".avif";
+  if (mimeType === "image/tiff") return ".tiff";
+  if (mimeType === "image/bmp") return ".bmp";
   return "";
 }
 
@@ -870,6 +994,11 @@ function imageMimeForExtension(extension) {
   if (extension === ".png") return "image/png";
   if (extension === ".jpg" || extension === ".jpeg") return "image/jpeg";
   if (extension === ".webp") return "image/webp";
+  if (extension === ".gif") return "image/gif";
+  if (extension === ".heic" || extension === ".heif") return "image/heif";
+  if (extension === ".avif") return "image/avif";
+  if (extension === ".tif" || extension === ".tiff") return "image/tiff";
+  if (extension === ".bmp") return "image/bmp";
   return "";
 }
 
@@ -878,8 +1007,8 @@ function ingestAttachmentFiles(files, options = {}) {
   if (!pickedFiles.length || isPreparingSend || isResponding) return 0;
 
   let totalBytes = composerAttachments.reduce((sum, attachment) => sum + (attachment.size || 0), 0);
-  let totalImageBytes = composerAttachments.reduce(
-    (sum, attachment) => sum + (attachment.kind === "image" ? (attachment.size || 0) : 0),
+  let totalBinaryBytes = composerAttachments.reduce(
+    (sum, attachment) => sum + (["image", "document"].includes(attachment.kind) ? (attachment.size || 0) : 0),
     0
   );
   const rejected = [];
@@ -887,7 +1016,7 @@ function ingestAttachmentFiles(files, options = {}) {
 
   for (let index = 0; index < pickedFiles.length; index += 1) {
     const file = pickedFiles[index];
-    const browserMime = String(file.type || "").trim().toLowerCase();
+    const browserMime = normalizeImageMimeType(file.type);
     const reportedMime = browserMime === "application/octet-stream" ? "" : browserMime;
     let name = sanitizeBrowserAttachmentName(file.name);
     let extension = getAttachmentExtension(name);
@@ -900,15 +1029,16 @@ function ingestAttachmentFiles(files, options = {}) {
     }
 
     const imageByExtension = SUPPORTED_IMAGE_EXTENSIONS.includes(extension);
+    const documentByExtension = SUPPORTED_DOCUMENT_EXTENSIONS.includes(extension);
     const expectedImageMime = imageMimeForExtension(extension);
-    const kind = imageByExtension ? "image" : "file";
+    const kind = imageByExtension ? "image" : (documentByExtension ? "document" : "file");
 
     if (!name) {
       rejected.push("An attachment has no usable filename.");
       continue;
     }
     if (reportedMime.startsWith("image/") && !imageByMime) {
-      rejected.push(`${name} is not a supported image. Use PNG, JPEG, or WebP.`);
+      rejected.push(`${name} is not a supported image. Use PNG, JPEG, WebP, GIF, HEIC/HEIF, AVIF, TIFF, or BMP.`);
       continue;
     }
     if (kind === "image" && reportedMime && (!imageByMime || reportedMime !== expectedImageMime)) {
@@ -916,11 +1046,11 @@ function ingestAttachmentFiles(files, options = {}) {
       continue;
     }
     if (kind !== "image" && imageByMime) {
-      rejected.push(`${name} needs a PNG, JPG, JPEG, or WebP filename extension.`);
+      rejected.push(`${name} needs a supported image filename extension: ${SUPPORTED_IMAGE_EXTENSIONS.join(", ")}.`);
       continue;
     }
-    if (kind !== "image" && !SUPPORTED_ATTACHMENT_EXTENSIONS.includes(extension)) {
-      rejected.push(`${name} is not a supported text/code file or image.`);
+    if (kind === "file" && !SUPPORTED_ATTACHMENT_EXTENSIONS.includes(extension)) {
+      rejected.push(`${name} is not a supported text/code file, image, or document.`);
       continue;
     }
 
@@ -943,8 +1073,8 @@ function ingestAttachmentFiles(files, options = {}) {
       rejected.push(`Total attachments exceed the ${Math.round(MAX_ATTACHMENT_TOTAL_BYTES / (1024 * 1024))} MB limit.`);
       break;
     }
-    if (kind === "image" && (totalImageBytes + file.size) > MAX_IMAGE_RAW_TRANSPORT_BYTES) {
-      rejected.push("Combined images are too large for the chat transport. Remove an image or use smaller files.");
+    if (["image", "document"].includes(kind) && (totalBinaryBytes + file.size) > MAX_BINARY_RAW_TRANSPORT_BYTES) {
+      rejected.push("Combined images and documents are too large for the chat transport. Remove an attachment or use smaller files.");
       break;
     }
 
@@ -959,12 +1089,14 @@ function ingestAttachmentFiles(files, options = {}) {
       size: file.size,
       lastModified: file.lastModified,
       kind,
-      mimeType: kind === "image" ? (reportedMime || expectedImageMime) : (reportedMime || "text/plain"),
+      mimeType: kind === "image"
+        ? (reportedMime || expectedImageMime)
+        : (kind === "document" ? (reportedMime || "application/octet-stream") : (reportedMime || "text/plain")),
       previewUrl,
       file
     });
     totalBytes += file.size;
-    if (kind === "image") totalImageBytes += file.size;
+    if (["image", "document"].includes(kind)) totalBinaryBytes += file.size;
     accepted += 1;
   }
 
@@ -989,23 +1121,42 @@ function dataTransferHasFiles(dataTransfer) {
     Array.from(dataTransfer?.items || []).some(item => item.kind === "file");
 }
 
-function readFileAsDataUrl(file) {
+function readFileAsDataUrl(file, errorMessage) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result || ""));
-    reader.onerror = () => reject(new Error("The image could not be read."));
+    reader.onerror = () => reject(new Error(errorMessage || "The attachment could not be read."));
     reader.readAsDataURL(file);
   });
 }
 
+function canonicalizeImageDataUrlMime(dataUrl, mimeType) {
+  const raw = String(dataUrl || "").trim();
+  const canonicalMime = normalizeImageMimeType(mimeType);
+  const separatorIndex = raw.toLowerCase().indexOf(";base64,");
+  if (!raw.toLowerCase().startsWith("data:") || separatorIndex < 5 || !SUPPORTED_IMAGE_MIME_TYPES.includes(canonicalMime)) {
+    return raw;
+  }
+  return `data:${canonicalMime};base64,${raw.slice(separatorIndex + ";base64,".length)}`;
+}
+
+async function readFileAsBase64(file) {
+  const dataUrl = await readFileAsDataUrl(file, "The document could not be read.");
+  const separatorIndex = dataUrl.indexOf(";base64,");
+  if (separatorIndex < 0) throw new Error("The document could not be encoded.");
+  const dataBase64 = dataUrl.slice(separatorIndex + ";base64,".length);
+  if (!dataBase64) throw new Error("The document is empty.");
+  return dataBase64;
+}
+
 async function buildAttachmentPayload() {
   const payload = [];
-  const imageBytes = composerAttachments.reduce(
-    (sum, attachment) => sum + (attachment.kind === "image" ? (attachment.size || 0) : 0),
+  const binaryBytes = composerAttachments.reduce(
+    (sum, attachment) => sum + (["image", "document"].includes(attachment.kind) ? (attachment.size || 0) : 0),
     0
   );
-  if (imageBytes > MAX_IMAGE_RAW_TRANSPORT_BYTES) {
-    throw new Error("Combined images are too large for the chat transport. Remove an image or use smaller files.");
+  if (binaryBytes > MAX_BINARY_RAW_TRANSPORT_BYTES) {
+    throw new Error("Combined images and documents are too large for the chat transport. Remove an attachment or use smaller files.");
   }
   for (const attachment of composerAttachments) {
     if (attachment.kind === "image") {
@@ -1017,8 +1168,9 @@ async function buildAttachmentPayload() {
           throw new Error(`Could not read ${attachment.name} as an image.`);
         }
       }
+      dataUrl = canonicalizeImageDataUrlMime(dataUrl, attachment.mimeType);
       if (!isSupportedImageDataUrl(dataUrl)) {
-        throw new Error(`${attachment.name} is not a supported PNG, JPEG, or WebP image.`);
+        throw new Error(`${attachment.name} is not a supported PNG, JPEG, WebP, GIF, HEIC/HEIF, AVIF, TIFF, or BMP image.`);
       }
       payload.push({
         name: attachment.name,
@@ -1026,6 +1178,28 @@ async function buildAttachmentPayload() {
         kind: "image",
         mime_type: attachment.mimeType,
         data_url: dataUrl
+      });
+      continue;
+    }
+
+    if (attachment.kind === "document") {
+      let dataBase64 = String(attachment.dataBase64 || "");
+      if (!dataBase64 && attachment.file) {
+        try {
+          dataBase64 = await readFileAsBase64(attachment.file);
+        } catch (err) {
+          throw new Error(`Could not read ${attachment.name} as a document.`);
+        }
+      }
+      if (!dataBase64) {
+        throw new Error(`${attachment.name} is empty.`);
+      }
+      payload.push({
+        name: attachment.name,
+        size: attachment.size,
+        kind: "document",
+        mime_type: attachment.mimeType,
+        data_base64: dataBase64
       });
       continue;
     }
@@ -1125,7 +1299,8 @@ function sendDebugChat() {
     });
 }
 
-async function createNewSession(options = {}) {
+async function createNewSession(options = {}, projectId = null) {
+  const normalizedProjectId = normalizeProjectId(projectId);
   try {
     const data = await window.ApiHttp.postJSONRequest(
       `${CHAT_PREFIX}/new_chat`,
@@ -1140,11 +1315,402 @@ async function createNewSession(options = {}) {
 
     setCurrentSessionId(data.session_id);
     syncSocketChatSessionSubscription(currentSessionId);
+    if (normalizedProjectId) {
+      await window.ApiHttp.postJSONRequest(
+        `${PROJECTS_PREFIX}/assign_session`,
+        { session_id: currentSessionId, project_id: normalizedProjectId },
+        options,
+        "Conversation could not be assigned to the Project."
+      );
+    }
+    setActiveProjectFilter(normalizedProjectId ? projectFilterKey(normalizedProjectId) : "all");
     loadChatHistory();
     return currentSessionId;
   } catch (err) {
     throw err;
   }
+}
+
+async function startNewChat(project = null) {
+  const projectId = normalizeProjectId(project?.id);
+  clearPromptEditState({ clearInput: true });
+  clearComposerAttachments();
+  syncSocketChatSessionSubscription("");
+  clearCurrentSessionId();
+
+  if (projectId) {
+    setActiveProjectFilter(projectFilterKey(projectId));
+  }
+
+  try {
+    await createNewSession({}, projectId);
+    document.getElementById("chatMessages").innerHTML = "";
+    closeSidebarOnMobile();
+  } catch (err) {
+    if (isRedirectingToLoginError(err)) {
+      return;
+    }
+    showCustomAlert(getActionErrorMessage(
+      "",
+      err,
+      projectId ? "Could not create a new chat in this Project." : "Could not create a new chat."
+    ));
+    console.error(err);
+  }
+}
+
+function normalizeProjectId(value) {
+  const parsed = Number(String(value ?? "").trim());
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function projectFilterKey(projectId) {
+  return `project:${projectId}`;
+}
+
+function getProjectById(projectId) {
+  const normalizedId = normalizeProjectId(projectId);
+  return projectRecords.find(project => normalizeProjectId(project.id) === normalizedId) || null;
+}
+
+function getActiveProject() {
+  if (!activeProjectFilter.startsWith("project:")) return null;
+  return getProjectById(activeProjectFilter.slice("project:".length));
+}
+
+function projectConversationCount(projectId) {
+  const normalizedId = normalizeProjectId(projectId);
+  return chatHistorySessions.filter(session => normalizeProjectId(session.project_id) === normalizedId).length;
+}
+
+function unassignedConversationCount() {
+  return chatHistorySessions.filter(session => normalizeProjectId(session.project_id) === null).length;
+}
+
+function setActiveProjectFilter(filterKey) {
+  const requestedFilter = String(filterKey || "all");
+  if (requestedFilter.startsWith("project:") && !getProjectById(requestedFilter.slice("project:".length))) {
+    activeProjectFilter = "all";
+  } else if (requestedFilter === "unassigned") {
+    activeProjectFilter = "unassigned";
+  } else if (requestedFilter.startsWith("project:")) {
+    activeProjectFilter = requestedFilter;
+  } else {
+    activeProjectFilter = "all";
+  }
+  renderProjectList();
+  displayGroupedSessions(chatHistorySessions);
+}
+
+function createProjectFilterRow(filterKey, label, count, project = null) {
+  const row = document.createElement("li");
+  row.className = "project-row";
+  row.classList.toggle("active", activeProjectFilter === filterKey);
+  row.setAttribute("role", "button");
+  row.setAttribute("tabindex", "0");
+
+  const name = document.createElement("span");
+  name.className = "project-name";
+  name.textContent = label;
+  name.title = label;
+  row.appendChild(name);
+
+  const countLabel = document.createElement("span");
+  countLabel.className = "project-count";
+  countLabel.textContent = String(count);
+  countLabel.setAttribute("aria-label", `${count} conversations`);
+
+  const selectFilter = () => setActiveProjectFilter(filterKey);
+  row.addEventListener("click", selectFilter);
+  row.addEventListener("keydown", event => {
+    if (event.target !== row) return;
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    selectFilter();
+  });
+
+  if (project) {
+    const newChatButton = document.createElement("button");
+    newChatButton.type = "button";
+    newChatButton.textContent = "➕";
+    newChatButton.title = `New chat in project ${project.name}`;
+    newChatButton.setAttribute("aria-label", newChatButton.title);
+    newChatButton.addEventListener("click", event => {
+      event.stopPropagation();
+      startNewChat(project);
+    });
+    row.appendChild(newChatButton);
+  }
+
+  row.appendChild(countLabel);
+
+  if (project) {
+    const actions = document.createElement("div");
+    actions.className = "sidebar-row-actions";
+
+    const editButton = document.createElement("button");
+    editButton.type = "button";
+    editButton.textContent = "✏️";
+    editButton.title = `Edit Project ${project.name}`;
+    editButton.setAttribute("aria-label", editButton.title);
+    editButton.addEventListener("click", event => {
+      event.stopPropagation();
+      openProjectEditor(project);
+    });
+
+    const deleteButton = document.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.textContent = "❌";
+    deleteButton.title = `Delete Project ${project.name}`;
+    deleteButton.setAttribute("aria-label", deleteButton.title);
+    deleteButton.addEventListener("click", event => {
+      event.stopPropagation();
+      deleteProject(project);
+    });
+
+    actions.appendChild(editButton);
+    actions.appendChild(deleteButton);
+    row.appendChild(actions);
+  }
+
+  return row;
+}
+
+function renderProjectList() {
+  const list = document.getElementById("projectList");
+  if (!list) return;
+
+  if (activeProjectFilter.startsWith("project:") && !getActiveProject()) {
+    activeProjectFilter = "all";
+  }
+
+  list.innerHTML = "";
+  list.appendChild(createProjectFilterRow("all", "All Chats", chatHistorySessions.length));
+  list.appendChild(createProjectFilterRow("unassigned", "Unassigned", unassignedConversationCount()));
+
+  projectRecords.forEach(project => {
+    list.appendChild(createProjectFilterRow(
+      projectFilterKey(project.id),
+      String(project.name || "Untitled Project"),
+      projectConversationCount(project.id),
+      project
+    ));
+  });
+
+  const context = document.getElementById("chatHistoryContext");
+  if (context) {
+    if (activeProjectFilter === "unassigned") {
+      context.textContent = "Unassigned Chats";
+    } else if (getActiveProject()) {
+      context.textContent = getActiveProject().name;
+    } else {
+      context.textContent = "All Chats";
+    }
+    context.title = context.textContent;
+  }
+}
+
+async function loadProjects() {
+  try {
+    const data = await window.ApiHttp.requestJSON(
+      `${PROJECTS_PREFIX}/list`,
+      { method: "GET", cache: "no-store", headers: { "Accept": "application/json" } },
+      "Projects could not be loaded."
+    );
+    projectRecords = Array.isArray(data.projects) ? data.projects : [];
+    renderProjectList();
+    displayGroupedSessions(chatHistorySessions);
+    return data;
+  } catch (err) {
+    console.error(err);
+    renderProjectList();
+    return { status: "error", projects: [] };
+  }
+}
+
+function closeProjectModal(modalName) {
+  const modalId = modalName === "assignment" ? "projectAssignmentModal" : "projectEditorModal";
+  const modal = document.getElementById(modalId);
+  if (modal) modal.classList.remove("active");
+  if (modalName === "assignment") {
+    assigningProjectSessionId = null;
+  } else {
+    editingProjectId = null;
+  }
+  if (projectModalPreviousFocus && document.contains(projectModalPreviousFocus)) {
+    projectModalPreviousFocus.focus();
+  }
+  projectModalPreviousFocus = null;
+}
+
+function openProjectEditor(project = null) {
+  const modal = document.getElementById("projectEditorModal");
+  const title = document.getElementById("projectEditorTitle");
+  const idInput = document.getElementById("projectEditorId");
+  const nameInput = document.getElementById("projectNameInput");
+  const instructionsInput = document.getElementById("projectInstructionsInput");
+  const error = document.getElementById("projectEditorError");
+  if (!modal || !nameInput || !instructionsInput) return;
+
+  projectModalPreviousFocus = document.activeElement;
+  editingProjectId = project ? normalizeProjectId(project.id) : null;
+  if (title) title.textContent = editingProjectId ? "Edit Project" : "Create Project";
+  if (idInput) idInput.value = editingProjectId ? String(editingProjectId) : "";
+  nameInput.value = project ? String(project.name || "") : "";
+  instructionsInput.value = project ? String(project.instructions || "") : "";
+  if (error) error.textContent = "";
+  modal.classList.add("active");
+  nameInput.focus();
+}
+
+function openProjectAssignment(sessionRecord) {
+  const modal = document.getElementById("projectAssignmentModal");
+  const select = document.getElementById("projectAssignmentSelect");
+  const chatName = document.getElementById("projectAssignmentChatName");
+  const error = document.getElementById("projectAssignmentError");
+  if (!modal || !select || !sessionRecord) return;
+
+  projectModalPreviousFocus = document.activeElement;
+  assigningProjectSessionId = normalizeSessionId(sessionRecord.session_id);
+  select.innerHTML = "";
+
+  const unassignedOption = document.createElement("option");
+  unassignedOption.value = "";
+  unassignedOption.textContent = "Unassigned";
+  select.appendChild(unassignedOption);
+
+  projectRecords.forEach(project => {
+    const option = document.createElement("option");
+    option.value = String(project.id);
+    option.textContent = project.name;
+    select.appendChild(option);
+  });
+
+  const currentProjectId = normalizeProjectId(sessionRecord.project_id);
+  select.value = currentProjectId ? String(currentProjectId) : "";
+  if (chatName) chatName.textContent = sessionRecord.session_name || "New Chat";
+  if (error) error.textContent = "";
+  modal.classList.add("active");
+  select.focus();
+}
+
+async function saveProject(event) {
+  event.preventDefault();
+  const nameInput = document.getElementById("projectNameInput");
+  const instructionsInput = document.getElementById("projectInstructionsInput");
+  const saveButton = document.getElementById("projectEditorSaveButton");
+  const error = document.getElementById("projectEditorError");
+  const name = String(nameInput?.value || "").trim();
+  if (!name) {
+    if (error) error.textContent = "Project name is required.";
+    nameInput?.focus();
+    return;
+  }
+
+  const isEditing = Boolean(editingProjectId);
+  const payload = {
+    name,
+    instructions: String(instructionsInput?.value || "")
+  };
+  if (isEditing) payload.project_id = editingProjectId;
+
+  if (saveButton) saveButton.disabled = true;
+  if (error) error.textContent = "";
+  try {
+    await window.ApiHttp.postJSONRequest(
+      `${PROJECTS_PREFIX}/${isEditing ? "update" : "create"}`,
+      payload,
+      {},
+      `Project could not be ${isEditing ? "updated" : "created"}.`
+    );
+    closeProjectModal("editor");
+    await loadProjects();
+  } catch (err) {
+    if (error) error.textContent = getAsyncRequestErrorMessage(err, "Project could not be saved.");
+  } finally {
+    if (saveButton) saveButton.disabled = false;
+  }
+}
+
+async function deleteProject(project) {
+  if (!project || !confirm(`Delete Project "${project.name}"? Its conversations will remain under Unassigned.`)) {
+    return;
+  }
+
+  try {
+    await window.ApiHttp.postJSONRequest(
+      `${PROJECTS_PREFIX}/delete`,
+      { project_id: project.id },
+      {},
+      "Project could not be deleted."
+    );
+    if (activeProjectFilter === projectFilterKey(project.id)) {
+      activeProjectFilter = "unassigned";
+    }
+    await Promise.all([loadProjects(), loadChatHistory()]);
+  } catch (err) {
+    showCustomAlert(getAsyncRequestErrorMessage(err, "Project could not be deleted."));
+  }
+}
+
+async function saveProjectAssignment(event) {
+  event.preventDefault();
+  const select = document.getElementById("projectAssignmentSelect");
+  const saveButton = document.getElementById("projectAssignmentSaveButton");
+  const error = document.getElementById("projectAssignmentError");
+  if (!assigningProjectSessionId || !select) return;
+
+  const projectId = normalizeProjectId(select.value);
+  if (saveButton) saveButton.disabled = true;
+  if (error) error.textContent = "";
+  try {
+    await window.ApiHttp.postJSONRequest(
+      `${PROJECTS_PREFIX}/assign_session`,
+      { session_id: assigningProjectSessionId, project_id: projectId },
+      {},
+      "Conversation could not be moved."
+    );
+    closeProjectModal("assignment");
+    await Promise.all([loadChatHistory(), loadProjects()]);
+  } catch (err) {
+    if (error) error.textContent = getAsyncRequestErrorMessage(err, "Conversation could not be moved.");
+  } finally {
+    if (saveButton) saveButton.disabled = false;
+  }
+}
+
+function initializeProjectControls() {
+  const createButton = document.getElementById("createProjectButton");
+  const editorForm = document.getElementById("projectEditorForm");
+  const assignmentForm = document.getElementById("projectAssignmentForm");
+  if (createButton) createButton.addEventListener("click", () => openProjectEditor());
+  if (editorForm) editorForm.addEventListener("submit", saveProject);
+  if (assignmentForm) assignmentForm.addEventListener("submit", saveProjectAssignment);
+
+  document.querySelectorAll("[data-project-modal-close]").forEach(button => {
+    button.addEventListener("click", () => closeProjectModal(button.dataset.projectModalClose));
+  });
+
+  ["projectEditorModal", "projectAssignmentModal"].forEach(modalId => {
+    const modal = document.getElementById(modalId);
+    if (!modal) return;
+    modal.addEventListener("click", event => {
+      if (event.target === modal) {
+        closeProjectModal(modalId === "projectAssignmentModal" ? "assignment" : "editor");
+      }
+    });
+  });
+
+  document.addEventListener("keydown", event => {
+    if (event.key !== "Escape") return;
+    if (document.getElementById("projectAssignmentModal")?.classList.contains("active")) {
+      closeProjectModal("assignment");
+    } else if (document.getElementById("projectEditorModal")?.classList.contains("active")) {
+      closeProjectModal("editor");
+    }
+  });
+
+  renderProjectList();
 }
 
 function groupSessions(sessions) {
@@ -1172,14 +1738,29 @@ function getChatHistorySearchTerm() {
 }
 
 function getFilteredChatSessions(sessions) {
-  const term = getChatHistorySearchTerm();
-  if (!term) return sessions || [];
+  let visibleSessions = sessions || [];
+  if (activeProjectFilter === "unassigned") {
+    visibleSessions = visibleSessions.filter(session => normalizeProjectId(session.project_id) === null);
+  } else if (activeProjectFilter.startsWith("project:")) {
+    const activeProjectId = normalizeProjectId(activeProjectFilter.slice("project:".length));
+    visibleSessions = visibleSessions.filter(session => normalizeProjectId(session.project_id) === activeProjectId);
+  }
 
-  return (sessions || []).filter(session => {
+  const term = getChatHistorySearchTerm();
+  if (!term) return visibleSessions;
+
+  return visibleSessions.filter(session => {
     const name = String(session.session_name || "").toLowerCase();
     const sessionId = String(session.session_id || "").toLowerCase();
     return name.includes(term) || sessionId.includes(term);
   });
+}
+
+function getEmptyChatHistoryMessage() {
+  if (getChatHistorySearchTerm()) return "No matching chats";
+  if (activeProjectFilter === "unassigned") return "No unassigned chats";
+  if (getActiveProject()) return "No chats in this Project";
+  return "No chats yet";
 }
 
 function sessionExistsInHistory(sessionId, sessions = chatHistorySessions) {
@@ -1272,7 +1853,18 @@ function displayGroupedSessions(sessions) {
         };
 
         const actions = document.createElement("div");
-        actions.className = "chat-session-actions";
+        actions.className = "sidebar-row-actions";
+        const projectBtn = document.createElement("button");
+        projectBtn.type = "button";
+        projectBtn.title = "Move conversation to a Project";
+        projectBtn.setAttribute("aria-label", "Move conversation to a Project");
+        projectBtn.textContent = "\uD83D\uDCC1";
+        projectBtn.onclick = (event) => {
+          event.stopPropagation();
+          openProjectAssignment(session);
+        };
+
+        actions.appendChild(projectBtn);
         actions.appendChild(renameBtn);
         actions.appendChild(deleteBtn);
 
@@ -1285,10 +1877,10 @@ function displayGroupedSessions(sessions) {
     }
   });
 
-  if (renderedCount === 0 && getChatHistorySearchTerm()) {
+  if (renderedCount === 0) {
     const empty = document.createElement("li");
     empty.className = "chat-history-empty";
-    empty.textContent = "No matching chats";
+    empty.textContent = getEmptyChatHistoryMessage();
     chatList.appendChild(empty);
   }
 }
@@ -1722,7 +2314,9 @@ document.addEventListener("DOMContentLoaded", () => {
     chatAttachmentInput.accept = [
       ...SUPPORTED_ATTACHMENT_EXTENSIONS,
       ...SUPPORTED_IMAGE_EXTENSIONS,
-      ...SUPPORTED_IMAGE_MIME_TYPES
+      ...SUPPORTED_IMAGE_MIME_TYPES,
+      ...Object.keys(IMAGE_MIME_ALIASES),
+      ...SUPPORTED_DOCUMENT_EXTENSIONS
     ].join(",");
     chatAttachmentInput.addEventListener("change", handleAttachmentSelection);
   }
@@ -1786,6 +2380,7 @@ document.addEventListener("DOMContentLoaded", () => {
   initializeCpuOnlyToggle();
   initializeApiAccessControls();
   initializeImageAttachmentViewer();
+  initializeProjectControls();
   initializeFixedLayoutMetricsObserver();
   refreshComposerButtons();
   renderComposerAttachments();
@@ -1814,28 +2409,14 @@ document.addEventListener("DOMContentLoaded", () => {
 
   const newChatButton = document.querySelector(".new-chat");
   if (newChatButton) {
-    newChatButton.addEventListener("click", () => {
-      clearPromptEditState({ clearInput: true });
-      clearComposerAttachments();
-      syncSocketChatSessionSubscription("");
-      clearCurrentSessionId();
-      createNewSession().then(() => {
-        document.getElementById("chatMessages").innerHTML = "";
-        closeSidebarOnMobile();
-      }).catch((err) => {
-        if (isRedirectingToLoginError(err)) {
-          return;
-        }
-        showCustomAlert(getActionErrorMessage("", err, "Could not create a new chat."));
-        console.error(err);
-      });
-    });
+    newChatButton.addEventListener("click", () => startNewChat());
   } else {
     console.warn("New Chat button not found.");
   }
 
   loadSettings();
 
+  loadProjects();
   loadChatHistory();
   initModelDrawer();
 });
@@ -2120,6 +2701,13 @@ function loadSettings() {
       }
       setVal("scanDirectoryInput", data.scan_directory);
       setVal("versionDisplay", data.version);
+      if (Number.isInteger(data.chat_import_max_mib) && data.chat_import_max_mib > 0) {
+        setVal("chatImportMaxMib", data.chat_import_max_mib);
+        const importFileInput = document.getElementById("importFile");
+        const importSizeLimit = document.getElementById("chatImportSizeLimit");
+        if (importFileInput) importFileInput.dataset.maxMib = String(data.chat_import_max_mib);
+        if (importSizeLimit) importSizeLimit.textContent = String(data.chat_import_max_mib);
+      }
 
       window.APP_VERSION = data.version;
 
@@ -2243,6 +2831,7 @@ function saveSettings() {
     top_p:            getVal("defaultTopP"),
     repeat_penalty:   getVal("defaultRepeatPenalty"),
     seed:             getVal("defaultSeed"),
+    chat_import_max_mib: getVal("chatImportMaxMib"),
     attachments_max_files: getVal("attachmentMaxFiles"),
     attachments_max_file_bytes: getAttachmentLimitBytes("attachmentMaxFileBytes"),
     attachments_max_total_bytes: getAttachmentLimitBytes("attachmentMaxTotalBytes"),
@@ -2387,6 +2976,7 @@ function loadChatHistory() {
     .then(res => res.json())
     .then(data => {
       chatHistorySessions = Array.isArray(data.sessions) ? data.sessions : [];
+      renderProjectList();
       displayGroupedSessions(chatHistorySessions);
 
       if (currentSessionId && !sessionExistsInHistory(currentSessionId, chatHistorySessions)) {
@@ -2483,6 +3073,14 @@ async function sendChat() {
     return;
   }
 
+  // Keep generated preview data out of the transport/persistence payload.
+  const displayAttachments = attachmentPayload === null ? null : attachmentPayload.map((attachment, index) => {
+    const source = composerAttachments[index];
+    return PNG_PREVIEW_MIME_TYPES.includes(attachment.mime_type) && source
+      ? { ...attachment, previewUrl: source.previewUrl, previewRequest: source.previewRequest, previewError: source.previewError }
+      : attachment;
+  });
+
   if (isEdit) {
     const userBubble = findUserBubbleByMessageId(sourceMessageId);
     const botBubble = findBotBubbleByMessageId(sourceMessageId);
@@ -2511,13 +3109,13 @@ async function sendChat() {
     userBubble.dataset.messageId = messageId;
     setUserBubbleText(userBubble, message);
     if (attachmentPayload !== null) {
-      renderMessageAttachments(userBubble, attachmentPayload);
+      renderMessageAttachments(userBubble, displayAttachments);
     }
 
     botBubble.dataset.messageId = messageId;
     prepareBubbleForStreaming(botBubble);
   } else {
-    appendUserMessage(message, { messageId, attachments: attachmentPayload });
+    appendUserMessage(message, { messageId, attachments: displayAttachments });
     const botBubble = createBotBubble();
     botBubble.dataset.messageId = messageId;
     prepareBubbleForStreaming(botBubble);
@@ -2534,7 +3132,7 @@ async function sendChat() {
   pendingReloadCurrent = false;
   isPreparingSend = false;
 
-  // Recommended (lets you ignore out-of-order chunks)
+  // Associate incoming chunks with the current response.
   window.currentAssistantMessageId = messageId;
   clearPromptEditState();
   refreshComposerButtons();
@@ -3519,10 +4117,78 @@ function handleDrawerBarOnResize() {
   }
   queueFixedLayoutMetricsUpdate();
 }
+async function loadSystemInstructionsPreference() {
+  const input = document.getElementById('systemInstructionsInput');
+  const alert = document.getElementById('system-instructions-alert');
+  const submitButton = document.querySelector('#systemInstructionsForm button[type="submit"]');
+  if (!input || !alert) return;
+
+  input.disabled = true;
+  if (submitButton) submitButton.disabled = true;
+  alert.textContent = "Loading System Instructions...";
+  alert.className = "";
+  try {
+    const data = await window.ApiHttp.requestJSON(
+      '/settings/system_instructions',
+      {
+        method: 'GET',
+        cache: 'no-store',
+        headers: { 'Accept': 'application/json' }
+      },
+      "System Instructions could not be loaded."
+    );
+    input.value = String(data.system_instructions || "");
+    const maxChars = Number(data.max_chars);
+    if (Number.isInteger(maxChars) && maxChars > 0) input.maxLength = maxChars;
+    alert.textContent = "";
+  } catch (err) {
+    if (isRedirectingToLoginError(err)) return;
+    alert.textContent = getActionErrorMessage("", err, "System Instructions could not be loaded.");
+    alert.className = "error";
+  } finally {
+    input.disabled = false;
+    if (submitButton) submitButton.disabled = false;
+  }
+}
+
 function toggleUserSettingsModal(show) {
   closeAllDrawers();
   document.getElementById('userSettingsModal').style.display = show ? 'flex' : 'none';
+  if (show) loadSystemInstructionsPreference();
 }
+
+document.getElementById('systemInstructionsForm').onsubmit = function(e) {
+  e.preventDefault();
+  const form = this;
+  const input = form.elements["system_instructions"];
+  const submitButton = form.querySelector('button[type="submit"]');
+  const csrfField = form.querySelector('input[name="csrf_token"]');
+  const csrfToken = csrfField ? csrfField.value : '';
+  const alert = document.getElementById('system-instructions-alert');
+
+  submitButton.disabled = true;
+  alert.textContent = "Saving...";
+  alert.className = "";
+  window.ApiHttp.postJSONRequest(
+    '/settings/system_instructions',
+    { system_instructions: input.value },
+    { csrfToken },
+    "System Instructions could not be saved."
+  )
+    .then((json) => {
+      input.value = String(json.system_instructions || "");
+      alert.textContent = json.message || "System Instructions saved.";
+      alert.className = "success";
+    })
+    .catch((err) => {
+      if (isRedirectingToLoginError(err)) return;
+      alert.textContent = getActionErrorMessage("", err, "System Instructions could not be saved.");
+      alert.className = "error";
+    })
+    .finally(() => {
+      submitButton.disabled = false;
+    });
+};
 
 document.getElementById('changeEmailForm').onsubmit = function(e) {
   e.preventDefault();

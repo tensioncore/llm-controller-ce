@@ -14,6 +14,7 @@ import threading
 import config
 from app_settings import get_setting
 from db_mysql import mysql_conn
+from smtp_credentials import SmtpCredentialError, decrypt_smtp_password
 
 auth = Blueprint('auth', __name__)
 bcrypt = Bcrypt()
@@ -302,12 +303,23 @@ def _auth_email_config(log_missing=True):
             current_app.logger.warning("Auth email token not created because SMTP host/from_email is missing.")
         return None
 
+    stored_password = str(_get_auth_setting("auth.smtp.password", "") or "")
+    try:
+        smtp_password = decrypt_smtp_password(stored_password)
+    except SmtpCredentialError:
+        if log_missing:
+            current_app.logger.error(
+                "Auth email is unavailable because the stored SMTP password is invalid "
+                "or the persistent Flask secret key cannot decrypt it."
+            )
+        return None
+
     return {
         "host": host,
         "from_email": from_email,
         "port": _get_auth_setting_int("auth.smtp.port", 587),
         "username": str(_get_auth_setting("auth.smtp.username", "") or "").strip(),
-        "password": str(_get_auth_setting("auth.smtp.password", "") or ""),
+        "password": smtp_password,
         "use_tls": _get_auth_setting_bool("auth.smtp.use_tls", True),
     }
 

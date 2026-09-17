@@ -227,14 +227,13 @@ def _get_required_setting_bool(key: str) -> bool:
 def get_password_policy():
     """
     Returns normalized password policy dict from DB.
-    Matches your frontend shape and existing server-side expectations.
+    Matches the frontend shape and server-side expectations.
     """
     level = _get_required_setting_text("security.password_policy.level").lower()
     if level not in ("basic", "moderate", "strong", "custom"):
         raise RuntimeError("Invalid required setting: security.password_policy.level")
 
-    # For now, we always return explicit flags (even for non-custom),
-    # because your UI expects concrete values.
+    # The UI requires explicit flags for both preset and custom policies.
     min_length = _get_required_setting_int("security.password_policy.min_length", minimum=6)
     require_upper = _get_required_setting_bool("security.password_policy.require_upper")
     require_lower = _get_required_setting_bool("security.password_policy.require_lower")
