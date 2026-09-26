@@ -117,7 +117,6 @@ let pendingReloadCurrent = false;
 let modelLoaded = false;
 let modelStartInProgress = false;
 let pendingModelStartName = "";
-let userHidControls = false;
 let stopRequestedMessageId = null;
 let currentGenerationMode = null;
 const regenerateSnapshots = new Map();
@@ -165,7 +164,7 @@ const SUPPORTED_DOCUMENT_EXTENSIONS = [
 let MAX_ATTACHMENT_FILES = 8;
 let MAX_ATTACHMENT_FILE_BYTES = 1048576;
 let MAX_ATTACHMENT_TOTAL_BYTES = 4194304;
-const SOCKET_SEND_MAX_BYTES = 10 * 1024 * 1024;
+const SOCKET_SEND_MAX_BYTES = 64 * 1024 * 1024;
 const SOCKET_SEND_RESERVE_BYTES = 512 * 1024;
 const MAX_BINARY_RAW_TRANSPORT_BYTES = Math.floor((SOCKET_SEND_MAX_BYTES - SOCKET_SEND_RESERVE_BYTES) * 3 / 4);
 
@@ -1332,6 +1331,10 @@ async function createNewSession(options = {}, projectId = null) {
 }
 
 async function startNewChat(project = null) {
+  if (isResponding || isPreparingSend) {
+    showCustomAlert("Wait for the current response to finish, or stop it, before starting a new chat.");
+    return;
+  }
   const projectId = normalizeProjectId(project?.id);
   clearPromptEditState({ clearInput: true });
   clearComposerAttachments();
@@ -2225,6 +2228,7 @@ function stopActiveResponse() {
     if (ack.status === "idle") {
       isResponding = false;
       currentGenerationMode = null;
+      syncSocketChatSessionSubscription(currentSessionId);
       if (!restoreEditedTurnSnapshot(messageId)) {
         restoreBotBubbleSnapshot(messageId);
       }
@@ -2494,10 +2498,10 @@ function renderAuthReadinessPanel(auth) {
     return typeof escapeHtml === "function" ? escapeHtml(text) : text.replace(/[&<>"']/g, "");
   };
   const yesNo = (value) => value ? "Yes" : "No";
-  const warning = auth.warning ? `<div style="color:#ffcf8a; margin-top:8px;">${safe(auth.warning)}</div>` : "";
+  const warning = auth.warning ? `<div class="auth-readiness-wide" style="color:#ffcf8a; margin-top:8px;">${safe(auth.warning)}</div>` : "";
 
   panel.innerHTML = `
-    <div><strong>Auth readiness</strong></div>
+    <div class="auth-readiness-wide"><strong>Auth readiness</strong></div>
     <div>Email confirmation structure: ${safe(yesNo(auth.email_confirmation_ready))}</div>
     <div>Forgot password routes: ${safe(yesNo(auth.forgot_password_ready))}</div>
     <div>SMTP: ${safe(auth.smtp_enabled ? "Enabled" : "Disabled")}</div>
@@ -2692,6 +2696,8 @@ function loadSettings() {
       setVal("dbHostInput", data.db_host);
       setVal("dbPortInput", data.db_port);
       setVal("llamaServerPathInput", data.llama_server_path);
+      setVal("speechRuntimePathInput", data.speech_runtime_path);
+      setVal("speechPortInput", data.speech_port);
       setVal("llamaMainPortInput", data.llama_main_port);
       setVal("llamaTitlePortInput", data.llama_title_port);
       if (typeof window.setTitleModelSelection === "function") {
@@ -2699,6 +2705,7 @@ function loadSettings() {
       } else {
         setVal("titleModelPathInput", data.title_model_path || "");
       }
+      setChecked("modelPickerShowFriendlyNames", data.model_picker_show_friendly_names);
       setVal("scanDirectoryInput", data.scan_directory);
       setVal("versionDisplay", data.version);
       if (Number.isInteger(data.chat_import_max_mib) && data.chat_import_max_mib > 0) {
@@ -2817,11 +2824,14 @@ function saveSettings() {
     db_host:           getVal("dbHostInput").trim(),
     db_port:           getVal("dbPortInput"),
     llama_server_path: getVal("llamaServerPathInput").trim(),
+    speech_runtime_path: getVal("speechRuntimePathInput").trim(),
+    speech_port: getVal("speechPortInput"),
     llama_main_port:   getVal("llamaMainPortInput"),
     llama_title_port:  getVal("llamaTitlePortInput"),
     title_model_path: typeof window.getTitleModelSelection === "function"
       ? window.getTitleModelSelection()
       : getVal("titleModelPathInput").trim(),
+    model_picker_show_friendly_names: getChecked("modelPickerShowFriendlyNames"),
     api_enabled:       getChecked("apiAccessEnabled"),
     n_gpu_layers:     getVal("defaultGpuLayers"),
     n_cpu_threads:    getVal("defaultCpuThreads"),
@@ -2867,6 +2877,7 @@ function saveSettings() {
 
       showCustomAlert("Settings updated successfully!");
       loadSettings();
+      if (typeof window.loadModelDropdown === "function") window.loadModelDropdown();
       done();
     })
     .catch(err => {
@@ -3247,16 +3258,22 @@ function loadChat(session_id) {
 
 function deleteSession(session_id) {
   if (!confirm("Are you sure you want to delete this chat?")) return;
-  postJSON(`${CHAT_PREFIX}/delete_session`, {
-    session_id 
-  }).then(() => {
+  window.ApiHttp.postJSONRequest(`${CHAT_PREFIX}/delete_session`, {
+    session_id
+  }, {}, "Could not delete this chat.").then(() => {
     if (currentSessionId === session_id) {
       clearPromptEditState({ clearInput: true });
       clearComposerAttachments();
-      syncSocketChatSessionSubscription("");
+      // Keep the stream subscription until its terminal event can release the busy state.
+      if (isResponding) stopActiveResponse();
+      else syncSocketChatSessionSubscription("");
       clearCurrentSessionId();
     }
     loadChatHistory();
+  }).catch(err => {
+    if (!isRedirectingToLoginError(err)) {
+      showCustomAlert(getActionErrorMessage("", err, "Could not delete this chat."));
+    }
   });
 }
 
@@ -3371,7 +3388,6 @@ function startModel(options = {}) {
         showCustomAlert('✅ Model loaded successfully');
         toggleDrawer('modelDrawer');
         pollModelStatus();
-        // Start logs using the new system module
         if (window.SystemDrawer && typeof window.SystemDrawer.startLogStream === "function") {
           window.SystemDrawer.startLogStream();
         }
@@ -3445,6 +3461,7 @@ function pollModelStatus() {
     .then(response => response.json())
     .then(data => {
       if (typeof window.updateTitleModelStatus === "function") window.updateTitleModelStatus(data);
+      if (!modelStartInProgress && typeof window.syncModelPickerStatus === "function") window.syncModelPickerStatus(data);
       const statusEl = document.getElementById('modelStatusText');
       const modelEl  = document.getElementById('currentModel');
       const modeEl   = document.getElementById('currentRuntimeMode');
@@ -3849,6 +3866,8 @@ function ensureBotBubbleForMessageId(messageId, options = {}) {
 function isChatSocketEventForActiveSession(data) {
   const sessionId = typeof data?.session_id === "string" ? data.session_id.trim() : "";
   if (!sessionId) return true;
+  if (isResponding && data.message_id === window.currentAssistantMessageId &&
+      (data.streaming_done || data.reset_state)) return true;
   return Boolean(currentSessionId) && sessionId === currentSessionId;
 }
 
@@ -3956,7 +3975,9 @@ socket.on("receive_message", function (data) {
       }
 
       if (footer) {
-        footer.innerText = formatResponseFooter(data);
+        footer.innerText = data.error
+          ? `Response interrupted — not saved. ${data.error}`
+          : formatResponseFooter(data);
       }
       renderMessageAttachments(bubble, data.assistant_attachments || data.bot_attachments || []);
     }
@@ -3966,6 +3987,7 @@ socket.on("receive_message", function (data) {
     stopRequestedMessageId = null;
     isResponding = false;
     currentGenerationMode = null;
+    syncSocketChatSessionSubscription(currentSessionId);
     const preserveAttachments = Boolean(
       data.preserve_attachments || data.attachment_error || data.error || data.status === "error"
     );
@@ -4026,6 +4048,7 @@ socket.on("chat_error", function (data) {
     isResponding = false;
     currentGenerationMode = null;
     isPreparingSend = false;
+    syncSocketChatSessionSubscription(currentSessionId);
     refreshComposerButtons();
     renderComposerAttachments();
     refreshAssistantBubbleControls();
@@ -4150,6 +4173,30 @@ async function loadSystemInstructionsPreference() {
     if (submitButton) submitButton.disabled = false;
   }
 }
+
+(function initializeAccountSettingsTabs() {
+  const tabs = Array.from(document.querySelectorAll('#userSettingsModal [role="tab"]'));
+  function selectTab(index, focus = false) {
+    tabs.forEach((tab, i) => {
+      const selected = i === index;
+      tab.classList.toggle('active', selected);
+      tab.setAttribute('aria-selected', String(selected));
+      tab.tabIndex = selected ? 0 : -1;
+      document.getElementById(tab.getAttribute('aria-controls')).hidden = !selected;
+      if (selected && focus) tab.focus();
+    });
+  }
+  tabs.forEach((tab, index) => {
+    tab.addEventListener('click', () => selectTab(index));
+    tab.addEventListener('keydown', event => {
+      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+      event.preventDefault();
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1
+        : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+      selectTab(next, true);
+    });
+  });
+})();
 
 function toggleUserSettingsModal(show) {
   closeAllDrawers();

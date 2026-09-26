@@ -88,7 +88,17 @@ function getValidationMessage(data) {
   });
 
   if (!firstEntry) return "";
-  return `${firstEntry[0]}: ${firstEntry[1].trim()}`;
+  const labels = {
+    attachments_max_files: "Maximum attachments",
+    attachments_max_file_bytes: "Maximum file size",
+    attachments_max_total_bytes: "Maximum total attachment size",
+    attachments_max_context_chars: "Attachment context length",
+    attachments_chunk_max_lines: "Attachment chunk lines",
+    attachments_chunk_overlap_lines: "Attachment overlap lines",
+    speech_runtime_path: "Speech runtime path",
+    speech_port: "Speech service port"
+  };
+  return `${labels[firstEntry[0]] || firstEntry[0]}: ${firstEntry[1].trim()}`;
 }
 
 function isStaleAuthResult(result) {

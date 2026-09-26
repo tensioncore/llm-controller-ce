@@ -114,6 +114,7 @@ def _configure_normal_mode(app: Flask):
     from project_routes import project_routes
     from runtime_config import get_chat_import_max_mib
     from settings_routes import settings_routes
+    from speech_routes import speech_routes
 
     cors_allowed_origins = get_cors_allowed_origins(app.config.get("BOOTSTRAP_CONFIG"))
     CORS(
@@ -133,6 +134,7 @@ def _configure_normal_mode(app: Flask):
     app.register_blueprint(settings_routes, url_prefix="/settings")
     app.register_blueprint(analytics_routes, url_prefix="/analytics")
     app.register_blueprint(api_routes)
+    app.register_blueprint(speech_routes, url_prefix="/speech")
     app.register_blueprint(auth)
     app.register_blueprint(admin)
     app.register_blueprint(benchmark_routes, url_prefix="/benchmark")
@@ -172,7 +174,7 @@ def _request_wants_json():
     return (
         request.is_json
         or request.accept_mimetypes.best == "application/json"
-        or path.startswith(('/api/', '/v1/', '/chat/', '/model/', '/settings/', '/analytics/', '/benchmark/'))
+        or path.startswith(('/api/', '/v1/', '/chat/', '/model/', '/settings/', '/analytics/', '/benchmark/', '/speech/'))
     )
 
 

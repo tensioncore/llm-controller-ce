@@ -4,6 +4,7 @@ import re
 
 import mysql.connector
 from werkzeug.security import generate_password_hash
+from app_settings import password_input_error
 
 
 INSTALL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "install")
@@ -54,7 +55,7 @@ INSTALLER_REVIEW_FIELDS = [
         "key": "llm.scan_directory",
         "label": "Default scan folder",
         "value_type": "string",
-        "description": "Base folder to scan for GGUF models",
+        "description": "Base folder to scan for GGUF models and local NeMo checkpoints",
         "default": "LLMs",
     },
     {
@@ -518,6 +519,9 @@ def validate_password_policy_level(level: str) -> str:
 
 def validate_password_against_policy(password: str, policy_level: str):
     policy = PASSWORD_POLICY_PRESETS[validate_password_policy_level(policy_level)]
+    input_error = password_input_error(password)
+    if input_error:
+        raise InstallerError(input_error)
 
     if len(password or "") < int(policy["min_length"]):
         raise InstallerError(

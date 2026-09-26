@@ -81,6 +81,11 @@
     el.style.color = ok === true ? "#7CFC90" : (ok === false ? "#ff6b6b" : "");
   }
 
+  function renderLogLines(element, lines) {
+    setHtml(element, lines && lines.length ? lines.map(formatLogLine).join("<br>") : "No logs yet.");
+    scrollToBottom(element);
+  }
+
   function setRegistryStatus(msg, ok) {
     const el = $("adminRegistryStatus");
     if (!el) return;
@@ -119,14 +124,7 @@
 
       if (!isLogsDrawerOpen()) return;
 
-      setHtml(
-        logContent,
-        (lines && lines.length)
-          ? lines.map(formatLogLine).join("<br>")
-          : "No logs yet."
-      );
-
-      scrollToBottom(logContent);
+      renderLogLines(logContent, lines);
     } catch (err) {
       setHtml(
         logContent,
@@ -923,6 +921,8 @@
     const fav = as01(row.is_favorite);
     const bench = as01(row.allow_benchmark);
     const projector = as01(row.is_projector);
+    const speech = as01(row.is_s2t);
+    const languageModel = !speech && String(row.model_path || "").toLowerCase().endsWith(".gguf");
 
     const sizeGb = _fmtBytesToGb(row.file_size);
     const mtime = _fmtMtime(row.mtime);
@@ -957,10 +957,10 @@
     `).join("");
 
     const favBadge = fav ? "⭐" : "☆";
-    const benchButtonHtml = projector
+    const benchButtonHtml = projector || !languageModel
       ? `
           <button type="button" class="user-action-btn" disabled
-            title="MMPROJ files cannot be benchmarked">
+            title="Only language models can be benchmarked">
             Benchmark Disabled
           </button>
         `
@@ -989,10 +989,16 @@
             <div class="admin-registry-profiles" aria-label="Model profiles">${profileControls}</div>
           </div>
           <div class="admin-registry-metadata-row">
+            <div class="registry-special-capabilities" role="group" aria-label="Special model capabilities">
             <label class="registry-profile-toggle registry-projector-state-toggle" title="Treat this registry row as an MMPROJ projector file">
               <input type="checkbox" class="registry-projector-toggle" data-id="${id}" ${projector ? "checked" : ""}>
               <span>MMPROJ File</span>
             </label>
+            <label class="registry-profile-toggle" title="Eligible for Speech-to-Text selection">
+              <input type="checkbox" class="registry-speech-toggle" data-id="${id}" ${speech ? "checked" : ""}>
+              <span>Speech-to-Text</span>
+            </label>
+            </div>
             <label class="registry-inline-field registry-friendly-name-field">
               <span>Friendly Name</span>
               <input type="text" data-metadata-field="friendly_name" value="${friendlyName}" maxlength="255" placeholder="Optional display title">
@@ -1189,12 +1195,12 @@
     if (tbody && !tbody._wired) {
       tbody._wired = true;
       tbody.addEventListener("change", (e) => {
-        const toggle = e.target?.closest?.(".registry-projector-toggle");
+        const toggle = e.target?.closest?.(".registry-projector-toggle, .registry-speech-toggle");
         if (!toggle) return;
 
         toggle.disabled = true;
         const requestedState = toggle.checked;
-        adminRegistryToggleById(toggle.getAttribute("data-id"), "is_projector", requestedState ? 1 : 0)
+        adminRegistryToggleById(toggle.getAttribute("data-id"), toggle.classList.contains("registry-speech-toggle") ? "is_s2t" : "is_projector", requestedState ? 1 : 0)
           .then((updated) => {
             if (!updated && toggle.isConnected) toggle.checked = !requestedState;
           })
@@ -1288,6 +1294,7 @@
   }
 
   window.SystemDrawer = {
+    renderLogLines,
     fetchLogs,
     startLogStream,
     stopLogStream,

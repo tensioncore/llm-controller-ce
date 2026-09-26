@@ -51,11 +51,11 @@ IMAGE_MIME_TYPES = MODEL_IMAGE_NORMALIZATION_MIME_TYPES.union({"image/png", "ima
 MODEL_IMAGE_MAX_PIXELS = 16_777_216
 DOCUMENT_EXTENSIONS = frozenset(DOCUMENT_FORMATS)
 DOCUMENT_EXTENSION_TO_MIME = {
-    extension: info["mime_type"]
+    extension: info["mime_type"].strip().lower()
     for extension, info in DOCUMENT_FORMATS.items()
 }
 DOCUMENT_EXTENSION_TO_ACCEPTED_MIME_TYPES = {
-    extension: frozenset({info["mime_type"], *info.get("accepted_mime_types", ())})
+    extension: frozenset(mime.strip().lower() for mime in (info["mime_type"], *info.get("accepted_mime_types", ())))
     for extension, info in DOCUMENT_FORMATS.items()
 }
 IMAGE_EXTENSION_TO_MIME = {
@@ -401,7 +401,7 @@ def _normalize_browser_document_attachment(
     normalized = {
         "kind": "document",
         "name": filename,
-        "mime_type": converted.source_mime_type,
+        "mime_type": _normalize_mime_type(converted.source_mime_type),
         "size": len(data),
         "content": content,
         "document_format": converted.source_format,

@@ -1,4 +1,5 @@
 ﻿from flask import Blueprint, request, jsonify, session, g
+from flask import current_app
 from forms import RenameSessionForm
 import sqlite3
 import requests
@@ -367,7 +368,6 @@ def auto_generate_chat_title(user_id: int, session_id: str):
         )
 
         def call_title(completion_url, retries=6, delay=0.5, timeout=30):
-            last_err = None
             for _ in range(retries):
                 try:
                     r = requests.post(
@@ -407,9 +407,7 @@ def auto_generate_chat_title(user_id: int, session_id: str):
                     if title:
                         return title
 
-                    last_err = "empty title after cleaning"
-                except Exception as e:
-                    last_err = str(e)
+                except Exception:
                     time.sleep(delay)
             return None
 
@@ -590,7 +588,7 @@ def _is_benchmark_running():
 
 
 def _close_generation_response(response):
-    if not response:
+    if response is None:
         return
     try:
         response.close()
@@ -1156,6 +1154,7 @@ def _persist_chat_turn(
     tokens_count,
     prompt_eval_tps,
     message_id,
+    session_row_id,
     replace_prompt_id=None,
     edit_prompt_id=None,
     attachment_context=None,
@@ -1165,16 +1164,15 @@ def _persist_chat_turn(
     c = conn.cursor()
 
     try:
-        c.execute("SELECT 1 FROM chats WHERE user_id=? AND session_id=? LIMIT 1", (user_id, session_id))
+        # The original row must survive; re-importing the same session ID must not revive an old generation.
+        c.execute("BEGIN IMMEDIATE")
+        c.execute(
+            "SELECT 1 FROM chats WHERE user_id=? AND session_id=? AND id=?",
+            (user_id, session_id, session_row_id),
+        )
         if not c.fetchone():
-            c.execute(
-                """
-                INSERT INTO chats
-                (user_id, session_id, session_name, timestamp, model_used, active_in_chat)
-                VALUES (?, ?, ?, ?, ?, 0)
-                """,
-                (user_id, session_id, _default_session_name(), timestamp, model_routes.current_main_model_used),
-            )
+            conn.rollback()
+            return False, False
 
         if replace_prompt_id:
             c.execute(
@@ -1369,6 +1367,7 @@ def _stream_chat_reply(
     message_id,
     user_message,
     messages,
+    session_row_id,
     replace_prompt_id=None,
     edit_prompt_id=None,
     attachment_context=None,
@@ -1455,6 +1454,7 @@ def _stream_chat_reply(
         prompt_end_time = None
         start_time = time.time()
         stream_error = None
+        stream_completed = False
         response = None
 
         payload = {"model": "llama", "messages": messages, "stream": True}
@@ -1581,8 +1581,12 @@ def _stream_chat_reply(
                 if not line:
                     continue
 
-                decoded_line = line.decode("utf-8").replace("data:", "").strip()
+                decoded_line = line.decode("utf-8")
+                if decoded_line.startswith("data:"):
+                    decoded_line = decoded_line[len("data:"):]
+                decoded_line = decoded_line.strip()
                 if decoded_line == "[DONE]":
+                    stream_completed = True
                     break
 
                 try:
@@ -1620,39 +1624,50 @@ def _stream_chat_reply(
                     tokens_count += answer_tokens_in_chunk
                     buffer += delta_text
 
-                    if "<think>" in buffer.lower():
-                        if prompt_start_time is None:
-                            prompt_start_time = time.time()
-                        parts = buffer.split("<think>", 1)
-                        final_answer += parts[0]
-                        buffer = parts[1]
-                        in_thoughts = True
+                    while buffer:
+                        delimiter = "</think>" if in_thoughts else "<think>"
+                        delimiter_match = re.search(delimiter, buffer, re.IGNORECASE | re.ASCII)
+                        if delimiter_match:
+                            text = buffer[:delimiter_match.start()]
+                            buffer = buffer[delimiter_match.end():]
+                        else:
+                            # Retain only a possible delimiter prefix across deltas.
+                            lowered_buffer = buffer.lower()
+                            pending_length = 0
+                            for length in range(min(len(buffer), len(delimiter) - 1), 0, -1):
+                                if delimiter.startswith(lowered_buffer[-length:]):
+                                    pending_length = length
+                                    break
+                            text = buffer[:-pending_length] if pending_length else buffer
+                            buffer = buffer[-pending_length:] if pending_length else ""
 
-                    if "</think>" in buffer.lower():
-                        if prompt_end_time is None:
-                            prompt_end_time = time.time()
-                        parts = buffer.split("</think>", 1)
-                        reasoning += parts[0]
-                        emitted_thoughts_delta += parts[0]
-                        buffer = parts[1]
-                        in_thoughts = False
+                        if in_thoughts:
+                            reasoning += text
+                            emitted_thoughts_delta += text
+                        else:
+                            final_answer += text
+                            emitted_answer_delta += text
+
+                        if delimiter_match is None:
+                            break
+                        if in_thoughts:
+                            if prompt_end_time is None:
+                                prompt_end_time = time.time()
+                            in_thoughts = False
+                        else:
+                            if prompt_start_time is None:
+                                prompt_start_time = time.time()
+                            in_thoughts = True
 
                     if in_thoughts:
                         prompt_tokens_count += answer_tokens_in_chunk
                         prompt_end_time = time.time()
-                        reasoning += buffer
-                        emitted_thoughts_delta += buffer
-                        buffer = ""
                     else:
                         if prompt_start_time is None:
                             prompt_start_time = start_time
                         if prompt_end_time is None and tokens_count >= PROMPT_TOKEN_LIMIT:
                             prompt_end_time = time.time()
                             prompt_tokens_count = PROMPT_TOKEN_LIMIT
-
-                        final_answer += buffer
-                        emitted_answer_delta = buffer
-                        buffer = ""
 
                 _emit_receive_message(
                     user_room,
@@ -1666,6 +1681,8 @@ def _stream_chat_reply(
 
             if state["stop_event"].is_set():
                 state["stop_requested"] = True
+            elif not stream_completed:
+                raise requests.RequestException("The model backend ended the stream before [DONE].")
         except Exception:
             if state["stop_event"].is_set():
                 state["stop_requested"] = True
@@ -1674,6 +1691,14 @@ def _stream_chat_reply(
         finally:
             _close_generation_response(response)
             state["response"] = None
+
+        # At completion, Stop, or interruption, an unfinished delimiter is literal text.
+        if buffer:
+            if in_thoughts:
+                reasoning += buffer
+            else:
+                final_answer += buffer
+            buffer = ""
 
         elapsed_time = time.time() - start_time
         overall_tps = round(tokens_count / elapsed_time, 2) if elapsed_time > 0 else 0
@@ -1711,6 +1736,8 @@ def _stream_chat_reply(
                     total_tokens=tokens_count,
                     prompt_eval_tps=prompt_eval_tps,
                     streaming_done=True,
+                    error=stream_error,
+                    status="error",
                 )
             return
 
@@ -1781,6 +1808,7 @@ def _stream_chat_reply(
             tokens_count,
             prompt_eval_tps,
             message_id,
+            session_row_id,
             replace_prompt_id=replace_prompt_id,
             edit_prompt_id=edit_prompt_id,
             attachment_context=attachment_context,
@@ -1790,7 +1818,7 @@ def _stream_chat_reply(
             _emit_chat_error(
                 user_room,
                 action,
-                "Could not save the chat response.",
+                "Could not save the chat response. The conversation may have been deleted.",
                 message_id=message_id,
                 reset_state=True,
                 session_id=session_id,
@@ -1962,6 +1990,22 @@ def handle_message(data):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     current_attachment_context = incoming_attachment_context
+    c.execute(
+        "SELECT id FROM chats WHERE user_id=? AND session_id=? ORDER BY id LIMIT 1",
+        (user_id, session_id),
+    )
+    session_row = c.fetchone()
+    if not session_row:
+        conn.close()
+        _emit_chat_error(
+            user_room,
+            action,
+            "This conversation no longer exists. Start a new chat to continue.",
+            message_id=message_id,
+            reset_state=True,
+            session_id=session_id,
+        )
+        return
     if edit_prompt_id:
         target_row = _get_active_turn_row(c, user_id, session_id, edit_prompt_id)
         latest_row = _get_latest_active_turn_row(c, user_id, session_id)
@@ -2037,6 +2081,7 @@ def handle_message(data):
         message_id,
         user_message,
         messages,
+        session_row[0],
         edit_prompt_id=edit_prompt_id,
         attachment_context=current_attachment_context,
     )
@@ -2149,6 +2194,7 @@ def handle_regenerate_message(data):
         message_id,
         user_message,
         messages,
+        target_row[0],
         replace_prompt_id=source_prompt_id,
         attachment_context=attachment_context,
     )
@@ -2382,7 +2428,11 @@ def rename_session():
 @chat_routes.route('/debug_llama_response', methods=['GET', 'POST'])
 @login_required()
 def debug_llama_response():
-    data = request.json or {}
+    # Debug is an intentional supported CE feature, not development-only code.
+    # Keep this path unless the product decision explicitly changes.
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict) or not isinstance(data.get('message', ''), str):
+        return jsonify({"error": "Message must be text"}), 400
     message = data.get('message', '').strip()
     if not message:
         return jsonify({"error": "Message required"}), 400
@@ -2393,25 +2443,28 @@ def debug_llama_response():
             "error": "Benchmark is currently running. Debug output is temporarily unavailable until it finishes."
         }), 409
 
-    llama_url = model_routes.get_llama_main_completion_url()
     payload = {"model": "llama", "messages": [{"role": "user", "content": message}], "stream": True}
 
+    response = None
     try:
+        llama_url = model_routes.get_llama_main_completion_url()
         response = requests.post(llama_url, json=payload, stream=True, timeout=600)
         response.raise_for_status()
-    except Exception as e:
-        return jsonify({"error": f"Error: {str(e)}"}), 500
-
-    full_output = []
-    for line in response.iter_lines():
-        if line:
-            decoded_line = line.decode('utf-8').strip()
-            if decoded_line.startswith('data:'):
-                json_chunk = decoded_line[len('data:'):].strip()
-                if json_chunk == '[DONE]':
-                    break
-                try:
-                    full_output.append(json.loads(json_chunk))
-                except json.JSONDecodeError:
-                    continue
-    return jsonify({"full_response": full_output})
+        full_output = []
+        for line in response.iter_lines():
+            if line:
+                decoded_line = line.decode('utf-8').strip()
+                if decoded_line.startswith('data:'):
+                    json_chunk = decoded_line[len('data:'):].strip()
+                    if json_chunk == '[DONE]':
+                        break
+                    try:
+                        full_output.append(json.loads(json_chunk))
+                    except json.JSONDecodeError:
+                        continue
+        return jsonify({"full_response": full_output})
+    except Exception:
+        current_app.logger.exception("Debug inference request failed.")
+        return jsonify({"error": "The model backend could not complete the Debug request. Check the runtime configuration and try again."}), 500
+    finally:
+        _close_generation_response(response)

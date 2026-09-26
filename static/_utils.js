@@ -231,7 +231,6 @@ function extractAndStandardizeMath(content) {
   content = content.replace(/\\\((.*?)\\\)/g, function(_, match) {
     return `\\(${match.trim()}\\)`;
   });
-  // 5. Remove ONLY math/latex code block fences, leave other code blocks alone
   return content;
 }
 

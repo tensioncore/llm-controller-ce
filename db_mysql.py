@@ -52,17 +52,6 @@ def query_one(sql: str, params=None, dictionary: bool = True):
         return cur.fetchone()
 
 
-def scalar(sql: str, params=None, default=None):
-    """Return the first column of the first row (or default)."""
-    row = query_one(sql, params=params, dictionary=False)
-    if row is None:
-        return default
-    try:
-        return row[0]
-    except Exception:
-        return default
-
-
 def exec(sql: str, params=None, many: bool = False):
     """
     Run an INSERT/UPDATE/DELETE and commit automatically.

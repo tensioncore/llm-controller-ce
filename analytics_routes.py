@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import tempfile
 import uuid
+import threading
 from flask import Blueprint, jsonify, request, Response, session
 from helpers import DB_PATH
 from auth import get_db, login_required
@@ -39,7 +40,6 @@ CHAT_INSERT_COLS = [
 # separately for relationship remapping and role-aware ownership.
 IMPORT_ALLOWED = [column for column in CHAT_INSERT_COLS if column != "user_id"]
 
-MAX_IMPORT_ROWS = 25000
 SQLITE_IMPORT_EXTENSIONS = (".sqlite-backup", ".sqlite3", ".sqlite", ".db")
 OWNERSHIP_PRESERVE = "preserve_original_users"
 OWNERSHIP_ASSIGN = "assign_to_me"
@@ -47,6 +47,9 @@ VALID_CONFLICT_MODES = {"append", "overwrite"}
 VALID_OWNERSHIP_MODES = {OWNERSHIP_PRESERVE, OWNERSHIP_ASSIGN}
 MAX_IMPORT_SESSION_ID_CHARS = 128
 SQLITE_HEADER = b"SQLite format 3\x00"
+JSON_BACKUP_FORMAT = "llm-controller-ce-chat-backup"
+JSON_BACKUP_VERSION = 1
+_csv_import_lock = threading.Lock()
 
 
 class ImportValidationError(ValueError):
@@ -70,13 +73,9 @@ def _import_error(message, status_code=400):
     return jsonify({"status": "error", "message": message}), status_code
 
 
-def _import_limit_error(kind, max_bytes=None):
-    if kind == "size":
-        return _import_error(
-            f"Import file is too large. Maximum size is {max_bytes // (1024 * 1024)} MiB."
-        )
+def _import_limit_error(max_bytes):
     return _import_error(
-        f"Import contains too many rows/items. Maximum is {MAX_IMPORT_ROWS}."
+        f"Import file is too large. Maximum size is {max_bytes // (1024 * 1024)} MiB."
     )
 
 def _uploaded_file_size(file):
@@ -103,11 +102,11 @@ def _uploaded_file_size(file):
 def _read_import_file(file, max_bytes):
     size = _uploaded_file_size(file)
     if size is not None and size > max_bytes:
-        return None, _import_limit_error("size", max_bytes)
+        return None, _import_limit_error(max_bytes)
 
     raw = file.read(max_bytes + 1)
     if len(raw) > max_bytes:
-        return None, _import_limit_error("size", max_bytes)
+        return None, _import_limit_error(max_bytes)
 
     try:
         return raw.decode("utf-8"), None
@@ -167,11 +166,7 @@ def _sqlite_rows(conn, table_name, columns, order_by):
     selected = ", ".join(f'"{column}"' for column in columns)
     query = f'SELECT {selected} FROM "{table_name}" ORDER BY "{order_by}" ASC'
     cursor = conn.execute(query)
-    rows = cursor.fetchmany(MAX_IMPORT_ROWS + 1)
-    if len(rows) > MAX_IMPORT_ROWS:
-        raise ImportValidationError(
-            f"Import contains too many rows/items. Maximum is {MAX_IMPORT_ROWS}."
-        )
+    rows = cursor.fetchall()
     return [dict(row) for row in rows]
 
 
@@ -258,7 +253,7 @@ def _extract_sqlite_source(temp_path):
 def _read_sqlite_import(file, max_bytes):
     size = _uploaded_file_size(file)
     if size is not None and size > max_bytes:
-        return None, _import_limit_error("size", max_bytes)
+        return None, _import_limit_error(max_bytes)
 
     temp_path = None
     try:
@@ -272,7 +267,7 @@ def _read_sqlite_import(file, max_bytes):
                     break
                 total += len(chunk)
                 if total > max_bytes:
-                    return None, _import_limit_error("size", max_bytes)
+                    return None, _import_limit_error(max_bytes)
                 if len(header) < len(SQLITE_HEADER):
                     header += chunk[:len(SQLITE_HEADER) - len(header)]
                 temp_file.write(chunk)
@@ -310,18 +305,37 @@ def _parse_import_source(file, filename, is_admin):
     try:
         if filename.endswith(".json"):
             rows = json.loads(content)
+            if isinstance(rows, dict):
+                if rows.get("format") != JSON_BACKUP_FORMAT:
+                    return None, _import_error("Unsupported JSON backup format.")
+                version = rows.get("version")
+                if type(version) is not int or version != JSON_BACKUP_VERSION:
+                    return None, _import_error("Unsupported JSON backup version.")
+                for collection in ("chats", "projects", "chat_sessions"):
+                    if not isinstance(rows.get(collection), list):
+                        return None, _import_error(f"JSON backup requires a {collection} array.")
+                if not rows["chats"] and not rows["projects"]:
+                    return None, _import_error("Backup contains no chats or Projects.")
+                return {
+                    "chats": rows["chats"],
+                    "projects": rows["projects"],
+                    "chat_sessions": rows["chat_sessions"],
+                    "has_project_metadata": True,
+                    "is_sqlite": False,
+                    "is_json_backup": True,
+                }, None
         else:
-            reader = csv.DictReader(io.StringIO(content))
-            rows = []
-            for row_number, row in enumerate(reader, start=1):
-                if row_number > MAX_IMPORT_ROWS:
-                    return None, _import_limit_error("rows")
-                rows.append(row)
+            # csv's field limit is process-wide; keep concurrent imports from changing it mid-parse.
+            with _csv_import_lock:
+                previous_limit = csv.field_size_limit(max_bytes)
+                try:
+                    reader = csv.DictReader(io.StringIO(content))
+                    rows = list(reader)
+                finally:
+                    csv.field_size_limit(previous_limit)
     except (csv.Error, json.JSONDecodeError, UnicodeError):
         return None, _import_error("Import file could not be parsed as valid JSON or CSV.")
 
-    if isinstance(rows, list) and len(rows) > MAX_IMPORT_ROWS:
-        return None, _import_limit_error("rows")
     return {
         "chats": rows,
         "projects": [],
@@ -346,6 +360,39 @@ def _export_query(conn, user_id=None):
 
 def _rows_to_json(rows, columns):
     return [dict(zip(columns, row)) for row in rows]
+
+
+def _export_json_backup(conn, user_id=None):
+    # Keep chats, definitions, and membership in the same read snapshot.
+    conn.execute("BEGIN")
+    rows, columns = _export_query(conn, user_id)
+    scope = " WHERE user_id=?" if user_id is not None else ""
+    params = (user_id,) if user_id is not None else ()
+    cursor = conn.execute(
+        "SELECT id, user_id, name, instructions, created_at, updated_at FROM projects"
+        + scope + " ORDER BY id ASC",
+        params,
+    )
+    projects = _rows_to_json(cursor.fetchall(), [column[0] for column in cursor.description])
+    scope = " WHERE c.user_id=?" if user_id is not None else ""
+    cursor = conn.execute(
+        """
+        SELECT DISTINCT c.user_id, c.session_id, cs.project_id
+          FROM chats AS c
+          LEFT JOIN chat_sessions AS cs
+            ON cs.user_id=c.user_id AND cs.session_id=c.session_id
+        """ + scope + " ORDER BY c.user_id, c.session_id",
+        params,
+    )
+    chat_sessions = _rows_to_json(cursor.fetchall(), [column[0] for column in cursor.description])
+    return {
+        "format": JSON_BACKUP_FORMAT,
+        "version": JSON_BACKUP_VERSION,
+        "chats": _rows_to_json(rows, columns),
+        "projects": projects,
+        "chat_sessions": chat_sessions,
+    }
+
 
 MARKDOWN_EXPORT_FORMAT = "<!-- llm-controller-markdown-export: escaped-table-v1 -->"
 
@@ -457,7 +504,10 @@ def api_analytics():
             END) AS errors,
             SUM(total_tokens) AS recorded_tokens,
             AVG(CASE
-                WHEN endpoint = '/v1/chat/completions' AND duration IS NOT NULL
+                WHEN endpoint = '/v1/chat/completions'
+                 AND LOWER(TRIM(status)) = 'completed'
+                 AND COALESCE(http_status, 0) < 400
+                 AND duration IS NOT NULL
                 THEN duration
             END) AS avg_completion_time
         FROM request_events
@@ -558,8 +608,13 @@ def export_chats():
     fmt = request.args.get("format", "csv").lower().strip()
 
     conn = sqlite3.connect(DB_PATH)
-    rows, columns = _export_query(conn, user_id=user_id)
-    conn.close()
+    try:
+        if fmt == "json":
+            backup = _export_json_backup(conn, user_id)
+        else:
+            rows, columns = _export_query(conn, user_id=user_id)
+    finally:
+        conn.close()
 
     if fmt == "csv":
         output = io.StringIO()
@@ -571,7 +626,7 @@ def export_chats():
         return resp
 
     if fmt == "json":
-        resp = jsonify(_rows_to_json(rows, columns))
+        resp = jsonify(backup)
         resp.headers["Content-Disposition"] = "attachment; filename=chats_export.json"
         return resp
 
@@ -600,13 +655,9 @@ def _resolve_import_ownership_mode(is_admin):
     return ownership_mode
 
 
-def _normalize_import_chats(source_rows, ownership_mode, current_user_id):
-    if not isinstance(source_rows, list) or not source_rows:
+def _normalize_import_chats(source_rows, ownership_mode, current_user_id, *, project_backup=False):
+    if not isinstance(source_rows, list) or (not source_rows and not project_backup):
         raise ImportValidationError("No chats to import.")
-    if len(source_rows) > MAX_IMPORT_ROWS:
-        raise ImportValidationError(
-            f"Import contains too many rows/items. Maximum is {MAX_IMPORT_ROWS}."
-        )
 
     normalized = []
     required_user_ids = set()
@@ -630,6 +681,8 @@ def _normalize_import_chats(source_rows, ownership_mode, current_user_id):
         session_id = _validate_session_id(chat.get("session_id"), row_label)
         source_user_id = None
         raw_source_user_id = chat.get("user_id")
+        if project_backup:
+            raw_source_user_id = _positive_source_id(raw_source_user_id, "source user ID", row_label)
         if ownership_mode == OWNERSHIP_PRESERVE:
             try:
                 source_user_id = _positive_source_id(
@@ -680,7 +733,7 @@ def _normalize_import_chats(source_rows, ownership_mode, current_user_id):
     return normalized, required_user_ids
 
 
-def _normalize_sqlite_metadata(source, normalized_chats, ownership_mode, current_user_id):
+def _normalize_project_metadata(source, normalized_chats, ownership_mode, current_user_id):
     if not source.get("has_project_metadata"):
         return {}, {}, set()
 
@@ -688,6 +741,12 @@ def _normalize_sqlite_metadata(source, normalized_chats, ownership_mode, current
     required_user_ids = set()
     for row_number, project in enumerate(source.get("projects") or [], start=1):
         row_label = f"Source Project {row_number}"
+        if not isinstance(project, dict):
+            raise ImportValidationError(f"{row_label} is not a valid Project record.")
+        if source.get("is_json_backup") and not {
+            "id", "user_id", "name", "instructions", "created_at", "updated_at"
+        }.issubset(project):
+            raise ImportValidationError(f"{row_label} has incomplete Project metadata.")
         source_project_id = _positive_source_id(project.get("id"), "Project ID", row_label)
         source_user_id = _positive_source_id(project.get("user_id"), "owner ID", row_label)
         source_key = (source_user_id, source_project_id)
@@ -700,6 +759,10 @@ def _normalize_sqlite_metadata(source, normalized_chats, ownership_mode, current
         instructions = project.get("instructions")
         if instructions is not None and not isinstance(instructions, str):
             raise ImportValidationError(f"{row_label} has invalid instructions.")
+        if source.get("is_json_backup") and any(
+            type(project.get(field)) is not int for field in ("created_at", "updated_at")
+        ):
+            raise ImportValidationError(f"{row_label} has invalid timestamps.")
         created_at = _as_int(project.get("created_at"), None)
         updated_at = _as_int(project.get("updated_at"), None)
         if created_at is None or updated_at is None:
@@ -724,7 +787,7 @@ def _normalize_sqlite_metadata(source, normalized_chats, ownership_mode, current
         source_user_id = chat.get("_source_user_id")
         if source_user_id is None:
             raise ImportValidationError(
-                "SQLite Project metadata cannot be matched because a chat has no valid source user ID."
+                "Project metadata cannot be matched because a chat has no valid source user ID."
             )
         source_pair = (source_user_id, chat["session_id"])
         target_pair = (chat["_target_user_id"], chat["session_id"])
@@ -734,6 +797,10 @@ def _normalize_sqlite_metadata(source, normalized_chats, ownership_mode, current
     source_associations = {}
     for row_number, metadata in enumerate(source.get("chat_sessions") or [], start=1):
         row_label = f"Source conversation metadata row {row_number}"
+        if not isinstance(metadata, dict):
+            raise ImportValidationError(f"{row_label} is not a valid conversation record.")
+        if source.get("is_json_backup") and "project_id" not in metadata:
+            raise ImportValidationError(f"{row_label} is missing its Project reference.")
         source_user_id = _positive_source_id(metadata.get("user_id"), "owner ID", row_label)
         session_id = _validate_session_id(metadata.get("session_id"), row_label)
         source_pair = (source_user_id, session_id)
@@ -753,6 +820,9 @@ def _normalize_sqlite_metadata(source, normalized_chats, ownership_mode, current
         if ownership_mode == OWNERSHIP_PRESERVE:
             required_user_ids.add(source_user_id)
         source_associations[source_pair] = project_key
+
+    if source.get("is_json_backup") and set(source_associations) != source_chat_pairs:
+        raise ImportValidationError("JSON backup must contain exactly one mapping for each conversation.")
 
     target_associations = {}
     for source_pair in source_chat_pairs:
@@ -805,9 +875,26 @@ def _validate_source_users(user_ids):
         )
 
 
-def _preflight_project_conflicts(cursor, target_associations, projects):
+def _preflight_project_conflicts(cursor, target_associations, projects, *, reuse_surviving=False):
     reused_project_ids = {}
     reused_destination_ids = {}
+    if reuse_surviving:
+        # Clear History removes associations, but leaves the owned Project records.
+        # IDs alone are not identity; compare the definition and stable creation time.
+        # Never update a surviving definition from an uploaded backup.
+        for source_key, project in projects.items():
+            if project["source_user_id"] != project["target_user_id"]:
+                continue
+            cursor.execute(
+                "SELECT id, name, instructions, created_at FROM projects WHERE id=? AND user_id=?",
+                (source_key[1], project["target_user_id"]),
+            )
+            existing = cursor.fetchone()
+            if existing and tuple(existing[1:]) == (
+                project["name"], project["instructions"], project["created_at"]
+            ):
+                reused_project_ids[source_key] = existing[0]
+                reused_destination_ids[existing[0]] = source_key
     for (target_user_id, session_id), source_project_key in sorted(target_associations.items()):
         cursor.execute(
             "SELECT project_id FROM chat_sessions WHERE user_id=? AND session_id=?",
@@ -821,6 +908,9 @@ def _preflight_project_conflicts(cursor, target_associations, projects):
             raise ImportValidationError(
                 f"Conversation {session_id} for user {target_user_id} already has a conflicting Project association."
             )
+
+        if reused_project_ids.get(source_project_key) == existing_project_id:
+            continue
 
         source_project = projects[source_project_key]
         cursor.execute(
@@ -906,8 +996,9 @@ def import_chats():
             source.get("chats"),
             ownership_mode,
             user_id,
+            project_backup=source.get("is_json_backup", False),
         )
-        projects, target_associations, project_user_ids = _normalize_sqlite_metadata(
+        projects, target_associations, project_user_ids = _normalize_project_metadata(
             source,
             normalized,
             ownership_mode,
@@ -926,7 +1017,10 @@ def import_chats():
         c.execute("BEGIN IMMEDIATE")
         reused_project_ids = {}
         if source.get("has_project_metadata"):
-            reused_project_ids = _preflight_project_conflicts(c, target_associations, projects)
+            reused_project_ids = _preflight_project_conflicts(
+                c, target_associations, projects,
+                reuse_surviving=source.get("is_json_backup", False),
+            )
 
         target_pairs = sorted({
             (row["_target_user_id"], row["session_id"])
@@ -1098,8 +1192,13 @@ def admin_export_chats():
     target_user_id = _as_int(user_id, None) if user_id else None
 
     conn = sqlite3.connect(DB_PATH)
-    rows, columns = _export_query(conn, user_id=target_user_id)
-    conn.close()
+    try:
+        if fmt == "json":
+            backup = _export_json_backup(conn, target_user_id)
+        else:
+            rows, columns = _export_query(conn, user_id=target_user_id)
+    finally:
+        conn.close()
 
     suffix = "all" if target_user_id is None else f"user_{target_user_id}"
 
@@ -1113,7 +1212,7 @@ def admin_export_chats():
         return resp
 
     if fmt == "json":
-        resp = jsonify(_rows_to_json(rows, columns))
+        resp = jsonify(backup)
         resp.headers["Content-Disposition"] = f"attachment; filename=chats_export_{suffix}.json"
         return resp
 

@@ -402,8 +402,9 @@ def chat_completions():
 
     @stream_with_context
     def relay_stream():
-        status = "completed"
-        tracked_http_status = 200
+        status = "backend_error"
+        tracked_http_status = 502
+        stream_completed = False
         usage = None
         try:
             for raw_line in backend_response.iter_lines(decode_unicode=True):
@@ -412,7 +413,11 @@ def chat_completions():
                 line = raw_line if isinstance(raw_line, str) else raw_line.decode("utf-8", errors="replace")
                 if line.startswith("data:"):
                     body = line[5:].strip()
-                    if body and body != "[DONE]":
+                    if body == "[DONE]":
+                        stream_completed = True
+                        status = "completed"
+                        tracked_http_status = 200
+                    elif body:
                         try:
                             chunk = json.loads(body)
                             if isinstance(chunk, dict):
@@ -423,9 +428,14 @@ def chat_completions():
                         except ValueError:
                             pass
                 yield f"{line}\n\n"
+                if stream_completed:
+                    break
+            if not stream_completed:
+                raise requests.RequestException("The model backend ended the stream before [DONE].")
         except GeneratorExit:
-            status = "interrupted"
-            tracked_http_status = 499
+            if not stream_completed:
+                status = "interrupted"
+                tracked_http_status = 499
             raise
         except requests.RequestException:
             status = "backend_error"

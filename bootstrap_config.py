@@ -195,6 +195,8 @@ def normalize_cors_origin(value, default_port=None) -> str:
 
 
 def derive_cors_allowed_origins(app_host=None, app_port=None, extra_origins=None):
+    # Origins are deployment-dependent; do not automatically rewrite them or append ports.
+    # Supported configurations are documented in INSTALL.md and docs/ADMIN.md.
     host = normalize_app_host(app_host, DEFAULT_BOOTSTRAP_CONFIG["app_host"]) or DEFAULT_BOOTSTRAP_CONFIG["app_host"]
     candidates = []
 

@@ -1,59 +1,48 @@
-# LLM Controller CE - Installation Guide
+# LLM Controller CE — Installation
 
-LLM Controller CE uses a first-run web installer. This guide gives one ordered Ubuntu/Linux fresh install flow from a new VM to a running service, existing-install upgrade requirements, and Windows runtime notes.
+[← Product overview](README.md) · [Documentation](docs/README.md) · [Optional local voice](VOICE_INSTALL.md)
+
+CE uses a first-run web installer. This guide covers the existing installation contract: an ordered Ubuntu/Linux setup, Windows runtime notes, local document preparation, and manual upgrades.
+
+**Installing a new instance?** Start with [Requirements](#requirements), then follow [Ubuntu/Linux](#ubuntulinux-fresh-install) or the [Windows notes](#windows-default-runtime-layout). **Updating an existing instance?** Use [Existing installation upgrades](#existing-installation-upgrades), not the clean-install database files.
 
 ## Requirements
 
-LLM Controller CE v1.3 targets Python 3.11.7 and MySQL 8.0.22.
+The CE v1.4 reference targets are **Python 3.11.7** and **MySQL 8.0.22**. These identify the project's validated baseline, not a requirement to replace a working host with those exact historical patch versions. Use a compatible application environment and validate it on the intended host.
 
-You will need:
+You need Python, MySQL, a writable application folder, local GGUF models, and a working `llama-server` runtime compatible with the host operating system and hardware. Windows and Ubuntu/Linux are supported when these components are configured correctly.
 
-* Python 3
-* MySQL
-* A working `llama-server` runtime compatible with the host OS and hardware
-* Local GGUF model files
-* A writable install folder
-* For GPU telemetry, NVIDIA tools such as `nvidia-smi` or AMD ROCm tools such as `rocm-smi` or `rocminfo`, where applicable
+The runtime and models are supplied by the operator. For GPU telemetry, install the appropriate NVIDIA or AMD host tools separately. Image understanding additionally needs a compatible model/projector pair. Speech-to-text is optional and uses its own [dedicated environment](VOICE_INSTALL.md).
 
-Windows and Linux/Ubuntu are supported when Python, MySQL, and a compatible `llama-server` runtime are configured for the host.
+### Required application files
 
-## Required Application Files
+Use the complete application distribution. Important files include `app.py`, `requirements.txt`, `install/schema.sql`, `install/seed.sql`, the applicable `install/upgrade_v1_2.sql`, `install/upgrade_v1_3.sql`, and `install/upgrade_v1_4.sql` scripts, and `speech_runtime.py` for the optional speech adapter. The application also needs its normal templates, static files, helpers, and configuration example.
 
-A complete LLM Controller CE application folder should include:
+Keep a local model directory such as `LLMs/`, or configure another location in **Models DIR**.
 
-* `app.py`
-* `requirements.txt`
-* `install/schema.sql`
-* `install/seed.sql`
-* `install/upgrade_v1_2.sql` for an existing pre-v1.2 database
-* `install/upgrade_v1_3.sql` for an existing v1.2 database
-* a local models folder such as `LLMs/`
+## Local Docling document support
 
-## Local Docling Document Support
+`requirements.txt` includes **Docling 2.121.0** and its OpenDocument, JATS XML, and XBRL XML extras. Documents are converted locally to Markdown; only the converted text and basic metadata are saved. Supported formats and retention behavior are listed in the [chat and files guide](docs/CHAT.md#files-in-a-conversation).
 
-`requirements.txt` includes Docling 2.121.0 and its OpenDocument, JATS XML, and XBRL XML extras. Documents are converted locally to Markdown; only the converted text and basic metadata are saved.
+PDF conversion runs on CPU with **OCR disabled**. No LibreOffice, ffmpeg, or external OCR application is required. After installing the application requirements, download the layout and table models into `docling_artifacts/` beside `app.py`.
 
-Supported documents include PDF; modern Office Open XML documents, templates, slideshows, and macro-enabled variants; OpenDocument files and templates; EPUB; EML and MSG; AsciiDoc; LaTeX; BoxNote; WebVTT; Apple Pages; JATS `.nxml`; XBRL `.xbrl`; and DocLang `.dclg`/`.dclx`. Text/code files use native text handling, and images use the image attachment path. Legacy DOC, XLS, and PPT are unsupported. No LibreOffice, ffmpeg, or external OCR application is required.
+This preparation needs internet access. Chat-time PDF conversion uses local artifacts and does not download them. Missing or incomplete artifacts prevent PDF conversion; other supported documents do not require these PDF artifacts.
 
-PDF conversion runs on CPU with OCR disabled. After installing requirements, download the Docling layout and table models into `docling_artifacts/` beside `app.py`. This preparation requires internet access; conversion uses local artifacts and does not download them during chat. Missing or incomplete artifacts prevent PDF conversion. Other supported documents do not require these PDF artifacts.
-
-Ubuntu/Linux example:
+Ubuntu/Linux:
 
 ```bash
 cd /srv/llmcontroller
 ./venv/bin/docling-tools models download layout tableformer --output-dir /srv/llmcontroller/docling_artifacts
 ```
 
-Windows example for the default global Python installation:
+Windows, using the existing global-Python example:
 
 ```cmd
 cd /d E:\LLM-Controller
 C:\Python311\Scripts\docling-tools.exe models download layout tableformer --output-dir E:\LLM-Controller\docling_artifacts
 ```
 
-Use the `docling-tools` executable from the application's Python environment and keep the output path at `<LLM_CONTROLLER_DIR>/docling_artifacts`.
-
-CE requires these exact child directory names:
+Use the `docling-tools` executable from **your application's Python environment**; the example paths are not mandatory. Keep the output at `<LLM_CONTROLLER_DIR>/docling_artifacts` with these exact child directory names:
 
 ```text
 <LLM_CONTROLLER_DIR>/docling_artifacts/
@@ -61,33 +50,61 @@ CE requires these exact child directory names:
   docling-project--docling-models/
 ```
 
-If downloaded or cloned repositories use another namespace-derived directory name, such as `ds4sd--...`, rename them to the corresponding names above before CE PDF conversion can find them.
+If downloaded repositories have another namespace-derived name, such as `ds4sd--...`, rename the corresponding artifact directories to the names above. Do not change CE's lookup path to work around a differently named download.
 
-## Existing Installation Upgrades
+## Existing installation upgrades
 
-Before upgrading, stop CE and back up MySQL, `chats.sqlite`, and `bootstrap_config.json`. Deploy the application files, rerun `python -m pip install -r requirements.txt` with the application's Python executable, and prepare PDF artifacts if needed.
+These are **manual operator steps**, not actions for a coding agent. Before upgrading, stop CE and back up MySQL, `chats.sqlite`, `bootstrap_config.json`, and the matching `flask_secret.key`. Preserve backups outside the public application/documentation tree.
 
-### v1.2 To v1.3 Upgrade
+Treat the matching `flask_secret.key` as sensitive, protected backup material. Stored SMTP credentials use encryption key material derived from it; if the matching key is unavailable after restoration, SMTP credentials must be entered again.
 
-Run `install/upgrade_v1_3.sql` against the configured **MySQL** database. It creates `llm_user_preferences` with the fresh-install primary key and foreign key, then sets `app.version` to `LLM Controller CE v1.3`. It can be rerun without replacing existing preference rows; it does not repair a pre-existing table with a different definition.
+Replace the application files with the intended version, rerun the requirements installation using the application's Python executable, and prepare PDF artifacts when needed:
 
-From the application directory, replace the example database/account with your configured values:
+```bash
+python -m pip install -r requirements.txt
+```
+
+Use the actual application interpreter in place of `python` when necessary. Do not substitute the optional speech interpreter.
+
+Apply every required upgrade in order. **Do not execute fresh-install schema or seed files against an existing database.** Do not use MySQL's `--force`; if a statement fails, keep CE stopped and resolve the error. MySQL DDL commits independently, so an upgrade is not an all-or-nothing transaction.
+
+### v1.3 to v1.4 upgrade
+
+Run `install/upgrade_v1_4.sql` against the configured MySQL database. It adds `llm_benchmark_models.is_s2t` only when absent, seeds the three speech settings while preserving existing values, and updates `app.version` to `LLM Controller CE v1.4`.
+
+```bash
+mysql -u llmcontroller -p llmcontroller < install/upgrade_v1_4.sql
+```
+
+Replace the example account and database with your configured values. From PowerShell, use CMD's input redirection:
+
+```powershell
+cmd /c "mysql -u llmcontroller -p llmcontroller < install/upgrade_v1_4.sql"
+```
+
+The script does not install speech software or change SQLite. Rerunning it preserves existing speech paths, ports, selections, and S2T designations; it does not repair a pre-existing column with the wrong definition. Older installations must first complete their earlier upgrades below.
+
+### v1.2 to v1.3 upgrade
+
+Run `install/upgrade_v1_3.sql` against MySQL. It creates `llm_user_preferences` with the fresh-install primary key and foreign key, then sets `app.version` to `LLM Controller CE v1.3`.
 
 ```bash
 mysql -u llmcontroller -p llmcontroller < install/upgrade_v1_3.sql
 ```
 
-The same command works in Windows Command Prompt. From PowerShell, use CMD's input redirection:
+PowerShell:
 
 ```powershell
 cmd /c "mysql -u llmcontroller -p llmcontroller < install/upgrade_v1_3.sql"
 ```
 
-Do not use `--force`; if any statement fails, keep CE stopped and resolve the error before retrying. MySQL schema changes commit independently, so the script is not an all-or-nothing transaction. Do not rerun the fresh-install schema or seed on an existing database. After a successful upgrade, restart CE, confirm the About version, and save/reload System Instructions. SQLite Project and request-tracking tables are initialized at startup; this script does not modify SQLite.
+It can be rerun without replacing existing preference rows; it does not repair an already-existing table with a different definition. SQLite Project and request-tracking tables are initialized at application startup; this script does not modify SQLite.
 
-### Historical v1.1 To v1.2 Upgrade
+Continue with the v1.4 upgrade before starting a v1.4 application. After the complete upgrade, restart CE, confirm the About version, and check that System Instructions save and reload.
 
-The following migration applies only to pre-v1.2 databases. It adds the v1.2 fields and settings; it does not complete the v1.3 upgrade described above. Run it manually with the configured MySQL account after taking backups:
+### Historical v1.1 to v1.2 upgrade
+
+For a pre-v1.2 database, first run `install/upgrade_v1_2.sql` manually with the configured account after taking backups. The original command sequence is:
 
 ```bash
 mysqldump -u llmcontroller -p llmcontroller > llmcontroller-before-v1.2.sql
@@ -95,38 +112,41 @@ cp chats.sqlite chats-before-v1.2.sqlite
 mysql -u llmcontroller -p llmcontroller < install/upgrade_v1_2.sql
 ```
 
-Adjust the database name, account, and backup paths for your installation. This historical migration is not automatic and sets the displayed version to v1.2; complete the v1.3 requirements above before restarting.
+Replace the example backup destinations with secure locations outside the public application tree before running them. CE must already be stopped. This historical migration sets the version to v1.2; complete the v1.3 and v1.4 upgrades in order before restarting.
 
-## Ubuntu/Linux Fresh Install
+## Ubuntu/Linux fresh install
 
-This is a supported fresh Ubuntu service-style layout, not the only valid Linux deployment pattern:
+The example layout uses `/srv/llmcontroller` for CE, `/srv/llmcontroller/LLMs` for models, and `/srv/llama.cpp` for a separately supplied runtime source/build tree. This is one supported service-style layout, not the only valid Linux deployment pattern.
 
-* `/srv/llmcontroller`
-* `/srv/llmcontroller/LLMs`
-* `/srv/llama.cpp`
+### 1. Install OS prerequisites
 
-Follow these steps in order on a brand-new Ubuntu or cloud VM.
-
-### 1. Install OS Prerequisites
+On a new Ubuntu host:
 
 ```bash
 sudo apt update
 sudo apt upgrade -y
-sudo apt install -y python3 python3-pip python3-venv git curl wget unzip build-essential cmake pkg-config mysql-server mysql-client ufw
+sudo apt install -y python3 python3-pip python3-venv curl wget unzip build-essential cmake pkg-config mysql-server mysql-client ufw
+python3 --version
 ```
 
-### 2. Configure Firewall For Direct Port 5000 Access
+The distribution's `python3` package may differ from CE's reference version. Confirm which interpreter you intend to use before creating the environment; its venv package must match it.
+
+### 2. Configure firewall for direct port 5000 access
+
+For a deployment intentionally allowing direct access on port 5000, the existing example is:
 
 ```bash
 sudo ufw allow OpenSSH
 sudo ufw allow 5000/tcp
-sudo ufw --force enable
+sudo ufw enable
 sudo ufw status
 ```
 
-Firewall and reverse-proxy needs may differ if you deploy behind another proxy, load balancer, or provider firewall.
+Check existing firewall rules and the actual SSH port before enabling UFW remotely. Scope access to the intended clients; do not expose an unfinished installer to arbitrary visitors. Local-only, provider-firewall, or reverse-proxy deployments may not need a public port-5000 rule. Use HTTPS for credentials and private data over untrusted networks.
 
-### 3. Start MySQL And Create The Database User
+### 3. Start MySQL and create the database user
+
+The operator starts MySQL and prepares a fresh database/account:
 
 ```bash
 sudo systemctl enable --now mysql
@@ -141,31 +161,32 @@ FLUSH PRIVILEGES;
 EXIT;
 ```
 
-The web installer does not create the MySQL account for you. Before completing installer Step 1, MySQL must be running and the database credentials you enter must have write access to the selected database. Installer Step 1 saves and tests those values.
+Replace the example password before running the SQL. The web installer does not create the MySQL account. MySQL must be running, and the credentials entered in installer Step 1 must have write access to the selected database.
 
-### 4. Clone Or Extract LLM Controller CE
+### 4. Extract the application files
 
-Create a writable application folder and clone the public release repository:
+Obtain the application archive for the version being installed from the [release downloads](https://github.com/tensioncore/llm-controller-ce/releases). Create a writable destination:
 
 ```bash
-cd /srv
 sudo mkdir -p /srv/llmcontroller
 sudo chown -R "$USER":"$USER" /srv/llmcontroller
-git clone https://github.com/tensioncore/llm-controller-ce.git llmcontroller
+```
+
+Extract or copy the complete application so that **`app.py` is directly inside `/srv/llmcontroller`**, not inside an extra archive-named subdirectory. Then enter the folder:
+
+```bash
 cd /srv/llmcontroller
 ```
 
-These commands make `/srv/llmcontroller` writable by the current shell user so Git and Python package installs do not need elevated permissions. If you copy or extract files into `/srv` manually, `sudo` may be required for the folder creation, copy, extract, or ownership steps.
+Application package installs should not require elevated permissions. Manual copying/extraction into `/srv` may require permission or ownership adjustments.
 
-For private or test installs, use an HTTPS token or existing SSH access if required, or extract a release archive so that `app.py` is directly inside `/srv/llmcontroller`.
-
-### 5. Create The Local Model Folder
+### 5. Create the local model folder
 
 ```bash
 mkdir -p /srv/llmcontroller/LLMs
 ```
 
-### 6. Create The Virtual Environment And Install Requirements
+### 6. Create the virtual environment and install requirements
 
 ```bash
 cd /srv/llmcontroller
@@ -174,227 +195,150 @@ python3 -m venv venv
 ./venv/bin/python -m pip install -r requirements.txt
 ```
 
-For PDF support, complete the artifact download under **Local Docling Document Support** before starting CE.
+For PDF support, complete [Local Docling document support](#local-docling-document-support) before starting CE.
 
-If virtual environment creation fails on Ubuntu 24.04 with `ensurepip is not available`, install the matching venv package, then recreate the venv:
+If venv creation fails with `ensurepip is not available`, install the venv package matching the selected interpreter. For the distribution's default Python:
 
 ```bash
 sudo apt install -y python3-venv
 python3 -m venv venv
 ```
 
-Do not use `sudo pip`. If package installation fails because of permissions, fix ownership of the application folder, then rerun the venv Python command:
+Do not use `sudo pip`. Fix application-folder ownership rather than installing application dependencies as root:
 
 ```bash
 sudo chown -R "$USER":"$USER" /srv/llmcontroller
 ```
 
-### 7. Add A GGUF Model
+### 7. Add a GGUF model
 
-Small public example model:
-
-* Repository: `bartowski/DeepSeek-R1-Distill-Qwen-1.5B-GGUF`
-* File: `DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf`
-* Download source: `https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-1.5B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf`
-
-This model is optional and is shown only as a small public example. LLM Controller CE uses the active main model for chat-title generation when the picker remains at **Select Title Generation Model**. An administrator can instead select any enabled, present managed model; a separate title runtime is used only when the existing lifecycle detects at least two GPUs and can host it, otherwise title generation falls back to the main model.
+Place a complete compatible model in the local model folder. This small public model remains an optional example, not a required or bundled model:
 
 ```bash
 cd /srv/llmcontroller/LLMs
 wget -O DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf "https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-1.5B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf"
 ```
 
-For gated Hugging Face models, use your own token according to Hugging Face's download instructions. Keep model files local and point LLM Controller CE at the folder that contains them.
+Review the chosen model's license and requirements. For gated models, follow the model host's download instructions with your own credentials. Finish the download before rescanning in CE; a partial file is not a usable model.
 
-### 8. Build Or Provide llama-server
+A separate title model is optional. [Title generation](docs/MODELS.md#chat-title-generation) normally uses the active main model and only uses a dedicated runtime when the existing lifecycle can host it.
 
-LLM Controller CE does not build `llama-server` for you. The `llama-server` binary must already work from the shell before you point LLM Controller CE at it.
+### 8. Build or provide llama-server
 
-For image understanding, use a current compatible `llama-server` build that supports `--mmproj` and OpenAI-style `image_url` content containing inline data URLs. The model and projector must be a compatible pair. Check the upstream [server options and OpenAI-compatible endpoint documentation](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md) and [multimodal documentation](https://github.com/ggml-org/llama.cpp/blob/master/docs/multimodal.md) for the build you deploy. LLM Controller CE does not provide a projector, infer compatibility, generate images, perform OCR, or download remote image URLs.
+CE does not build `llama-server`. Supply a compatible executable and verify it from the shell before configuring CE to use it. Packaged binaries, provider-supplied builds, CPU builds, and compatible GPU builds are valid options.
 
-On Linux, `/srv/llama.cpp` is a convenient source/build folder:
+For image understanding, the runtime must support the selected model/projector pair, `--mmproj`, and OpenAI-style `image_url` content with inline data URLs. See the upstream [server documentation](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md) and [multimodal documentation](https://github.com/ggml-org/llama.cpp/blob/master/docs/multimodal.md) for your runtime version.
 
-```bash
-sudo mkdir -p /srv/llama.cpp
-sudo chown -R "$USER":"$USER" /srv/llama.cpp
-cd /srv
-git clone https://github.com/ggml-org/llama.cpp.git llama.cpp
-cd /srv/llama.cpp
-```
+For a source build, obtain a source archive from the [llama.cpp project](https://github.com/ggml-org/llama.cpp) and extract it so the source root is `/srv/llama.cpp`. Make that source/build folder writable by the account performing the build.
 
-NVIDIA CUDA hosts need a compatible NVIDIA driver and CUDA Toolkit installed before building. From `/srv/llama.cpp`, build and verify a CUDA-enabled `llama-server` with:
+NVIDIA CUDA hosts need a compatible driver and CUDA Toolkit before building:
 
 ```bash
 cd /srv/llama.cpp
-
 cmake -S . -B build \
   -DGGML_CUDA=ON \
   -DCMAKE_BUILD_TYPE=Release
-
 cmake --build build --config Release -- -j "$(nproc)"
-
 ./build/bin/llama-server --list-devices
 ```
 
-Optional CUDA architecture examples:
+Existing CUDA architecture examples are `-DCMAKE_CUDA_ARCHITECTURES=70` for Tesla V100 and `-DCMAKE_CUDA_ARCHITECTURES=120` for RTX PRO 6000 Blackwell / compute-capability-12.0-class cards. Use a toolkit and build compatible with the actual GPU; these are examples, not interchangeable settings.
 
-* Tesla V100: add `-DCMAKE_CUDA_ARCHITECTURES=70`
-* RTX PRO 6000 Blackwell / compute capability 12.0 class cards: add `-DCMAKE_CUDA_ARCHITECTURES=120`
-
-Example AMD ROCm/HIP build for MI300X:
+Existing AMD ROCm/HIP example for MI300X:
 
 ```bash
+cd /srv/llama.cpp
 HIPCXX="$(hipconfig -l)/clang" HIP_PATH="$(hipconfig -R)" \
 cmake -S . -B build \
   -DGGML_HIP=ON \
   -DGPU_TARGETS=gfx942 \
   -DCMAKE_BUILD_TYPE=Release
-
 cmake --build build --config Release -- -j "$(nproc)"
 ```
 
-MI300X is normally `gfx942`. Managed cloud GPU images often already include ROCm; do not reinstall ROCm unless your provider requires it. NVIDIA CUDA, CPU-only, packaged binaries, or provider-supplied builds are also valid paths as long as `llama-server` works on the host.
+MI300X uses the `gfx942` target in this example. Managed GPU images may already provide ROCm; do not reinstall a working stack just to follow an example. Inference support and telemetry support depend on the supplied host environment.
 
-### 9. Start The First-Run Installer Manually
+### 9. Start the first-run installer manually
 
-Untouched defaults bind the installer to loopback at `127.0.0.1:5000`. For a local installation using a browser on the same machine, keep those defaults.
+Untouched defaults bind the installer to **127.0.0.1:5000**. Keep those defaults when using a browser on the same machine.
 
-For remote installation, configure a bind address that the VM can listen on before starting the installer. Copy the example configuration:
+For a fresh remote installation, copy the configuration example before starting the app:
 
 ```bash
 cd /srv/llmcontroller
 cp bootstrap_config.example.json bootstrap_config.json
 ```
 
-Then set:
+Do not overwrite an existing installation's bootstrap configuration. In the new file, configure the following separately:
 
-- `app_host` to a server listen address available on the VM, such as `0.0.0.0` or a VM interface address
-- `app_port` to `5000`
-- `cors-allowed-origins` to the actual browser-visible origin, including scheme, hostname or IP, and port (for example, `http://<VM_PUBLIC_IP>:5000`)
+| Setting | Meaning |
+| --- | --- |
+| `app_host` | An address the server can listen on, such as `0.0.0.0` or a local interface address. |
+| `app_port` | The application port; `5000` in this example. |
+| `cors-allowed-origins` | The actual browser-visible origin, including scheme, hostname/IP, and port. |
 
-`0.0.0.0` is a server listen value, not a browser origin; do not use it in `cors-allowed-origins`. Save the file before starting the application.
+`0.0.0.0` is a listen value, **not a browser origin**. For example, a browser connecting to `http://<VM_IP>:5000` must use that actual origin, not `http://0.0.0.0:5000`. Match the real HTTPS origin when using a reverse proxy.
+
+Start CE:
 
 ```bash
 cd /srv/llmcontroller
 ./venv/bin/python app.py
 ```
 
-For local setup, open http://127.0.0.1:5000/. For a remote cloud VM configured as above, open the browser-visible origin you placed in `cors-allowed-origins`.
+For local setup, open `http://127.0.0.1:5000/`. For remote setup, open the actual configured browser origin through the intended private/restricted access path.
 
-### 10. Complete Installer Step 1
+### 10. Complete installer Step 1
 
-Installer Step 1 asks for:
+Step 1 asks for the application host/port, CORS accepted origins, database host/name/username/password, initial administrator email/password, and default password complexity.
 
-* App host
-* App port
-* CORS accepted origins
-* Database host
-* Database name
-* Database username
-* Database password
-* Initial admin email
-* Initial admin password
-* Default password complexity
+It writes `bootstrap_config.json`, tests the database credentials, imports the fresh `install/schema.sql` and `install/seed.sql`, and creates the initial administrator.
 
-For local-only browser use on the same machine, `127.0.0.1` is fine:
+The page loading does not prove that the origin settings are correct: a mismatched browser origin can still make submission fail. Keep server listen values separate from the browser-visible address.
 
-* `app_host`: `127.0.0.1`
-* `app_port`: `5000`
-* CORS accepted origins: `http://127.0.0.1:5000`
+![The first-run installer](docs/images/installer.png)
 
-For remote browser access to a cloud VM, keep the server listen address distinct from the browser-visible origin:
+### 11. Complete installer Step 2
 
-* `app_host`: a bindable server listen address such as `0.0.0.0` or a VM interface address
-* `app_port`: `5000`
-* CORS accepted origins: `http://<VM_PUBLIC_IP>:5000`
+Review and save the runtime defaults. For the Ubuntu layout above:
 
-CORS accepted origins must use the actual address in the browser and include scheme, hostname or IP, and port. Do not use the listen value `0.0.0.0` as a CORS origin. The installer page may load but form submission can fail with CORS if this is wrong.
+| Setting | Example |
+| --- | --- |
+| llama-server path | `/srv/llama.cpp/build/bin/llama-server` |
+| Model scan folder | `/srv/llmcontroller/LLMs` |
+| Main llama port | `8080` |
+| Title llama port | `8081` |
 
-Step 1 then:
+Other runtime settings include default GPU layers, default CPU threads, and GPU split threshold. After installation, restart CE cleanly so it starts in normal mode with the configured host and port.
 
-* writes bootstrap config `bootstrap_config.json`
-* tests the database credentials
-* imports `install/schema.sql`
-* imports `install/seed.sql`
-* creates the initial admin account
+Managed main and title `llama-server` processes bind to **127.0.0.1**. Keep those ports private; clients use the authenticated CE application endpoint.
 
-### 11. Complete Installer Step 2
+Optional configuration is documented in its primary guide: [title generation](docs/MODELS.md#chat-title-generation), [image models](docs/MODELS.md#image-capable-models), and [API access](docs/API.md#enable-access). None is required to complete normal typed-chat setup.
 
-Installer Step 2 lets you review and save default runtime settings. For the Ubuntu layout above, use:
+For image support, the normal application requirements supply Pillow (`>=11.3,<13`) and `pillow-heif` (`>=1.1.1,<2`). No extra image models or browser decoder libraries are required beyond the compatible language-model/projector pair. Custom platforms without matching wheels must supply the required codecs.
 
-* llama-server path: `/srv/llama.cpp/build/bin/llama-server`
-* model scan folder: `/srv/llmcontroller/LLMs`
-* main llama port: `8080`
-* title llama port: `8081`
+### 12. Stop the manual app process
 
-Other runtime settings include:
+After installation, stop the manually running app with **Ctrl+C** in its terminal before starting a service instance. Do not leave two app processes competing for ports and runtime ownership.
 
-* default GPU layers
-* default CPU threads
-* GPU split threshold
+### 13. Install Gunicorn into the same virtual environment
 
-After installation completes, restart the app. On the next launch, LLM Controller CE starts in normal mode using your configured host and port.
-
-LLM Controller CE launches its managed main and title `llama-server` processes on `127.0.0.1`. Keep ports `8080` and `8081` (or your configured replacements) private; clients should use the authenticated application endpoint, not the raw runtime ports.
-
-#### Optional Title Generation Model
-
-Leave the Admin Settings picker at **Select Title Generation Model** to generate titles with the active main model. On a host where the existing runtime lifecycle detects at least two usable GPUs, an enabled and present managed model can instead be selected for the dedicated title port. After changing that selection, stop and reload the managed main model to start the selected dedicated runtime; main-model fallback remains active until the dedicated process is ready. Disabling, removing, or losing the selected model also falls back safely to the main model.
-
-#### Optional Image Understanding Setup
-
-In Admin Settings, rescan the Model Registry, mark Images only as operator-facing suitability metadata, and save the compatible projector filename for the model row. The projector file must already exist inside the configured model scan directory and must match the selected multimodal model. Stop and reload an already-running model after changing its projector configuration so the runtime starts with `--mmproj`. The runtime status, not the Images checkbox by itself, determines whether image requests are accepted.
-
-Supported images are PNG, JPEG, WebP, GIF, HEIC/HEIF (`.heic`, `.heif`), AVIF (`.avif`), TIFF (`.tif`, `.tiff`), and BMP (`.bmp`). SVG is unsupported. PNG/JPEG are sent directly; other formats become an 8-bit RGB PNG using frame/page 0, flattening transparency onto white. Converted images are limited to 16,777,216 pixels.
-
-The normal requirements install supplies Pillow (`>=11.3,<13`) and `pillow-heif` (`>=1.1.1,<2`). No additional image models or browser decoder libraries are needed. Custom builds or platforms without matching wheels must provide the required codecs.
-
-Original images are saved with chats in `chats.sqlite`. TIFF and HEIC/HEIF use transient PNG previews in the composer and lightbox; no second image is saved. Animated GIF previews remain animated. File picker, drag-and-drop, and clipboard attachments share the configured limits. Protect `chats.sqlite` and chat exports as content-bearing backups.
-
-#### Optional Controlled API Setup
-
-API access is disabled by default. In the compact API Access section of Admin Settings:
-
-1. Generate or regenerate the single API key.
-2. Copy the plaintext key immediately; it is not shown again and only its SHA-256 hash is stored.
-3. Enable API access and save settings.
-
-Regenerating invalidates the previous key. Revoking disables access and clears the stored hash. The API exposes only the active model through `GET /v1/models` and `POST /v1/chat/completions`; it does not start or switch models. Use the browser-visible LLM Controller CE host and port:
-
-```bash
-curl http://127.0.0.1:5000/v1/models \
-  -H "Authorization: Bearer <API_KEY>"
-
-curl http://127.0.0.1:5000/v1/chat/completions \
-  -H "Authorization: Bearer <API_KEY>" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"<ACTIVE_MODEL_ID>","messages":[{"role":"user","content":"Hello"}],"stream":false}'
-```
-
-Use the exact model ID returned by `/v1/models`. Inline PNG, JPEG, WebP, GIF, HEIC/HEIF, AVIF, TIFF, and BMP data URLs are accepted only while the active runtime has a valid projector. The image conversion rules above also apply to API requests. Remote image URLs are rejected. Request tracking stores operational metadata such as source, status, duration, and backend-provided usage only—not prompts, responses, images, API keys, or authorization headers.
-
-### 12. Stop The Manual App Process
-
-After installer completion, stop the manually running app with `Ctrl+C` in the terminal where `./venv/bin/python app.py` is running.
-
-### 13. Install Gunicorn Into The Same Virtual Environment
-
-Install Gunicorn into the same virtual environment if you want to use the systemd service example:
+For the following systemd example:
 
 ```bash
 cd /srv/llmcontroller
 ./venv/bin/python -m pip install gunicorn
 ```
 
-### 14. Create And Enable The systemd Service
+### 14. Create and enable the systemd service
 
-Create the systemd service file:
+Create `/etc/systemd/system/llmcontroller.service`:
 
 ```bash
 sudo nano /etc/systemd/system/llmcontroller.service
 ```
 
-Use this service definition:
+Use the existing single-worker service definition, adapting paths, listen address, MySQL service name, and service-account policy to the host before enabling it:
 
 ```ini
 [Unit]
@@ -416,9 +360,7 @@ TimeoutStopSec=30
 WantedBy=multi-user.target
 ```
 
-The `--bind 0.0.0.0:5000` setting makes the service listen on all interfaces when firewall and network rules allow it. This server-listen value is separate from CORS accepted origins, which should use the browser-visible host.
-
-Enable and start the service:
+`--bind 0.0.0.0:5000` listens on all interfaces when network rules allow it. It remains separate from CORS accepted origins. Preserve the **single-worker** runtime-ownership model; this is not a multi-worker scaling recipe.
 
 ```bash
 sudo systemctl daemon-reload
@@ -426,32 +368,21 @@ sudo systemctl enable llmcontroller
 sudo systemctl start llmcontroller
 ```
 
-Adjust the service file before enabling it if your application folder, bind address, port, MySQL service name, or reverse proxy setup differs.
-
-### 15. Management And Log Commands
-
-Systemd service commands:
+### 15. Management and log commands
 
 ```bash
 sudo systemctl restart llmcontroller
 sudo systemctl stop llmcontroller
 sudo systemctl status llmcontroller --no-pager
-```
-
-Systemd log commands:
-
-```bash
 sudo journalctl -u llmcontroller -f
 sudo journalctl -u llmcontroller -n 100 --no-pager
 ```
 
-Because the service is enabled under `multi-user.target`, it will start again automatically after reboot when systemd reaches the normal multi-user boot target.
+An enabled service starts again at the normal multi-user boot target. CE service startup does **not** automatically start the optional speech model.
 
 ### Optional: Troubleshooting llama-server
 
-If you encounter model loading or runtime errors that appear to be related to `llama-server`, you can test the runtime directly by starting a model manually. This bypasses LLM Controller and allows `llama-server` to display its own error messages, which can help identify issues with the model file, runtime build, GPU configuration, or startup options.
-
-Example:
+A direct runtime launch can distinguish a model/runtime/driver issue from an application configuration issue. Stop the CE-managed model first, ensure the test port is free, and account for other GPU workloads:
 
 ```bash
 /srv/llama.cpp/build/bin/llama-server \
@@ -461,91 +392,81 @@ Example:
   -ngl 999
 ```
 
-Stop the managed model first so the test port is free. For a compatible multimodal pair, add `--mmproj /path/to/projector.gguf`. Do not bind this troubleshooting runtime to a public interface.
+For a compatible multimodal pair, add `--mmproj /path/to/projector.gguf`. Do not bind this troubleshooting runtime publicly. Stop it before returning ownership to CE.
 
-## Windows Default Runtime Layout
+## Optional: Local voice dictation
 
-The default Windows layout expects:
+Normal CE chat works without speech software, a speech model, CUDA prerequisites, or a configured speech interpreter. Voice uses a **separate operator-installed environment** and compatible local `.nemo` model. CE does not install those components or NVIDIA drivers.
 
-* `llama-server/llama-server.exe`
-* required runtime DLLs beside it
-* `start_llm_controller.bat`
+Follow the [Local Voice Dictation guide](VOICE_INSTALL.md) for the pinned Windows/NVIDIA CUDA setup, explicit Start/Stop controls, microphone requirements, and troubleshooting.
 
-Example Windows llama runtime files may include:
+## Attachment and import limits in v1.4
 
-* `llama-server/llama-server.exe`
-* `llama-server/ggml.dll`
-* `llama-server/ggml-base.dll`
-* `llama-server/ggml-cpu.dll`
-* `llama-server/llama.dll`
+The current limits and retention rules are maintained in [Chat, Projects, and files](docs/CHAT.md#attachment-limits). v1.4 supports per-file settings up to 10 MiB and combined settings up to 40 MiB without changing existing defaults. The API retains its separate 16 MiB body limit.
 
-CUDA builds may also require:
+The old fixed 25,000-row import ceiling is removed. **Maximum Chat Import Size**, integrity/schema/ownership checks, and practical host-memory/request-time limits still apply. See [Import and export](docs/CHAT.md#import-and-export).
 
-* `llama-server/ggml-cuda.dll`
-* other DLLs included with your compiled runtime
+## Windows default runtime layout
 
-Install Visual Studio Build Tools, CMake, Git, and a compatible NVIDIA CUDA Toolkit before building a Windows CUDA runtime.
+The Windows notes assume that Python, MySQL, the application requirements, and the first-run application setup described above have been prepared for the Windows host. SQL actions remain manual operator steps; CMD input redirection can be used from PowerShell as shown under upgrades.
 
-Simple Windows CUDA build example:
+The default layout contains:
+
+```text
+<LLM_CONTROLLER_DIR>/
+  app.py
+  start_llm_controller.bat
+  llama-server/
+    llama-server.exe
+    ...required runtime DLLs...
+```
+
+Common runtime DLLs include `ggml.dll`, `ggml-base.dll`, `ggml-cpu.dll`, and `llama.dll`. CUDA builds may also need `ggml-cuda.dll` and other DLLs supplied with the compiled runtime. Keep the matching runtime files together.
+
+For a Windows CUDA source build, install compatible Visual Studio Build Tools, CMake, and an NVIDIA CUDA Toolkit. Obtain and extract the llama.cpp source archive into a source directory such as `C:\src\llama.cpp`:
 
 ```powershell
-cd C:\src
-git clone https://github.com/ggml-org/llama.cpp.git
-cd llama.cpp
-
+cd C:\src\llama.cpp
 cmake -S . -B build -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release -j 16
-
 .\build\bin\Release\llama-server.exe --list-devices
 ```
 
-Optional Windows CUDA architecture examples:
+Optional architecture-specific configuration examples:
 
 ```powershell
 # Tesla V100
 cmake -S . -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=70 -DCMAKE_BUILD_TYPE=Release
 
-# RTX PRO 6000 Blackwell / compute capability 12.0 class cards
+# RTX PRO 6000 Blackwell / compute capability 12.0 class
 cmake -S . -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=120 -DCMAKE_BUILD_TYPE=Release
 ```
 
-Copy the built runtime into the LLM Controller CE app folder layout:
+Choose the appropriate configuration before building. Copy the executable and matching DLLs into the CE runtime directory, using your actual application path:
 
 ```powershell
-mkdir <LLM_CONTROLLER_DIR>\llama-server -Force
-copy .\build\bin\Release\llama-server.exe <LLM_CONTROLLER_DIR>\llama-server\
-copy .\build\bin\Release\*.dll <LLM_CONTROLLER_DIR>\llama-server\
+$ControllerDir = 'E:\LLM-Controller' # The folder containing app.py.
+New-Item -ItemType Directory -Path "$ControllerDir\llama-server" -Force
+Copy-Item .\build\bin\Release\llama-server.exe "$ControllerDir\llama-server\"
+Copy-Item .\build\bin\Release\*.dll "$ControllerDir\llama-server\"
 ```
 
-`<LLM_CONTROLLER_DIR>` is your local LLM Controller CE application folder and should contain `app.py`. Keep the required runtime DLLs beside `llama-server/llama-server.exe`.
+## Windows run notes
 
-## Windows Run Notes
-
-On Windows, start LLM Controller CE using:
+The default convenience launcher is:
 
 ```cmd
 start_llm_controller.bat
 ```
 
-This batch file is the default convenience launcher. Other launch methods are fine if they start the same app environment.
+Other launch methods are valid when they use the same application environment. For the running Command Prompt window, the existing operational guidance is to disable **QuickEdit Mode**, **Insert Mode**, **Enable line wrapping selection**, and **Extended text selection keys** in the console properties to reduce accidental console-interaction problems.
 
-To reduce the chance of the running app console freezing or misbehaving, open the Command Prompt window properties and disable:
+## Storage and host dependencies
 
-* **QuickEdit Mode**
-* **Insert Mode**
-* **Enable line wrapping selection**
-* **Extended text selection keys**
+MySQL stores system data; `chats.sqlite` stores chat/workspace data; bootstrap values live in local configuration. Runtime defaults are stored in `llm_app_settings`. The model scan directory is configurable rather than fixed to the example `LLMs` location.
 
-These settings help prevent accidental console interaction while LLM Controller CE is running.
+NVIDIA and AMD telemetry tools are optional host-side dependencies. Install and verify `nvidia-smi`, `rocm-smi`, or `rocminfo` as appropriate for the existing host stack; CE does not install them.
 
-## Notes
+[Administration and backups](docs/ADMIN.md) · [Models](docs/MODELS.md) · [Monitoring](docs/MONITORING.md)
 
-* LLM Controller CE uses MySQL for system data and SQLite for chat history.
-* Database bootstrap values are stored in local bootstrap config.
-* Runtime defaults are stored in the database table `llm_app_settings`.
-* The default model scan folder is typically `LLMs` on Windows and `/srv/llmcontroller/LLMs` in the Ubuntu example.
-* AMD ROCm and NVIDIA telemetry tools are optional host-side dependencies for GPU reporting where applicable. Install and verify tools such as `rocm-smi`, `rocminfo`, or `nvidia-smi` separately according to the host GPU stack; they are not installed by LLM Controller CE.
-
-## Attribution
-
-LLM Controller CE is developed by **Tensioncore Administration Services**.
+Developed by **Tensioncore Administration Services**.

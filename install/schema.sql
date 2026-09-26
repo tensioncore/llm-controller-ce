@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS `llm_benchmark_models` (
   `is_favorite` tinyint(1) NOT NULL DEFAULT '0',
   `allow_benchmark` tinyint(1) NOT NULL DEFAULT '1',
   `is_projector` TINYINT(1) NOT NULL DEFAULT 0,
+  `is_s2t` TINYINT(1) NOT NULL DEFAULT 0,
   `is_present` tinyint(1) NOT NULL DEFAULT '1',
   `notes` varchar(512) DEFAULT NULL,
   `profile_general` tinyint(1) NOT NULL DEFAULT '0',

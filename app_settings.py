@@ -4,6 +4,20 @@ import time
 
 from db_mysql import mysql_conn
 
+MAX_PASSWORD_BYTES = 72
+
+
+def password_input_error(password):
+    if not isinstance(password, str):
+        return "Password must be text."
+    try:
+        encoded = password.encode("utf-8")
+    except UnicodeError:
+        return "Password must be valid UTF-8 text."
+    if len(encoded) > MAX_PASSWORD_BYTES:
+        return f"Password must be at most {MAX_PASSWORD_BYTES} UTF-8 bytes; some characters use more than one byte."
+    return None
+
 # -------------------------------------------------------------------
 # Small in-process TTL cache for settings reads
 # -------------------------------------------------------------------
@@ -39,14 +53,6 @@ def _cache_set(key: str, found: bool, raw_value, value_type: str):
     expires_at = time.time() + float(_SETTINGS_CACHE_TTL_SEC)
     with _settings_cache_lock:
         _settings_cache[key] = (expires_at, bool(found), raw_value, (value_type or "").lower())
-
-
-def _cache_invalidate(key: str):
-    with _settings_cache_lock:
-        try:
-            del _settings_cache[key]
-        except Exception:
-            pass
 
 
 def get_setting(key: str, default=None, cast=None):
@@ -243,6 +249,7 @@ def get_password_policy():
     return {
         "level": level,
         "min_length": min_length,
+        "max_bytes": MAX_PASSWORD_BYTES,
         "require_upper": require_upper,
         "require_lower": require_lower,
         "require_digit": require_digit,

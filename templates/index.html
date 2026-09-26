@@ -15,6 +15,7 @@
     <script src="/static/_http.js" defer></script>
     <script src="/static/_utils.js" defer></script>
     <script src="/static/model_module.js" defer></script>
+    <script src="/static/speech.js" defer></script>
     <script src="/static/analytics_ui.js" defer></script>
     {% if session.get('role') == 'admin' %}
     <script src="/static/benchmark_ui.js" defer></script>
@@ -105,11 +106,18 @@
         </div>
         <button id="scrollToBottomBtn" class="scroll-to-bottom-btn" type="button" aria-label="Scroll to bottom" title="Scroll to bottom" aria-hidden="true">↓</button>
         <div class="chat-input-container">
+            <div id="dictationStatusStrip" class="dictation-status" hidden>
+                <span id="dictationStatus" role="status" aria-live="polite"></span>
+                <button id="openSpeechModels" type="button" hidden>Open Speech Models</button>
+                <button id="cancelDictation" type="button" hidden>Cancel recording</button>
+                <button id="dismissDictationStatus" type="button" title="Dismiss dictation message" aria-label="Dismiss dictation message" hidden>×</button>
+            </div>
             <div id="attachmentPreview" class="attachment-preview-list" aria-live="polite"></div>
             <div class="chat-input-row">
                 <input id="chatAttachmentInput" type="file" multiple hidden>
                 <textarea id="chatInput" placeholder="Ask anything" rows="1" onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
                <button id="attachFilesBtn" class="send-button attach-files-btn" type="button" title="Attach files or images" aria-label="Attach files or images">📎</button>
+               <button id="dictationButton" class="send-button attach-files-btn" type="button" aria-label="Voice Dictation" title="Voice Dictation" aria-pressed="false"><span id="dictationIcon" aria-hidden="true">🎙️</span></button>
                <button id="sendButton" class="send-button" onclick="sendChat()">➡️ Send</button>
                 <button  class="send-button" onclick="sendDebugChat()">🔎 Debug</button>
            </div>
@@ -139,31 +147,26 @@
         <span>🧠 Model</span>
         <button class="drawer-close-btn" onclick="toggleDrawer('modelDrawer')">✖</button>
     </div>
+    <div class="drawer-tabs" role="tablist" aria-label="Models">
+        <button id="languageModelTab" class="drawer-tab active" type="button" role="tab" aria-selected="true" aria-controls="languageModelPanel" tabindex="0">Language Model</button>
+        <button id="speechModelTab" class="drawer-tab" type="button" role="tab" aria-selected="false" aria-controls="speechModelPanel" tabindex="-1">Speech-to-Text</button>
+    </div>
+    <div id="languageModelPanel" class="model-tab-panel analytics-tab-panel" role="tabpanel" aria-labelledby="languageModelTab">
     <div class="model-drawer-grid">
 
         {% if session.get('role') == 'admin' %}
         <div class="model-settings">
         <div class="form-row" id="modelSortControlsWrapper">
             <div class="form-row" id="modelSortControls">
-            <button type="button" class="sort-btn" id="sortNameAsc" title="Name A–Z">
-                <span>A-Z</span><span style="font-size:0.9em;">▲</span>
-            </button>
-            <button type="button" class="sort-btn" id="sortNameDesc" title="Name Z–A">
-                <span>Z-A</span><span style="font-size:0.9em;">▼</span>
-            </button>
-            <button type="button" class="sort-btn" id="sortSizeAsc" title="Size Smallest">
-                <span>Size</span><span style="font-size:0.9em;">▲</span>
-            </button>
-            <button type="button" class="sort-btn" id="sortSizeDesc" title="Size Largest">
-                <span>Size</span><span style="font-size:0.9em;">▼</span>
-            </button>
-
-            <button type="button" class="sort-btn" id="sortTPSAsc" title="Max TPS (Slowest)">
-                <span>Speed</span><span style="font-size:0.9em;">▲</span>
-            </button>
-            <button type="button" class="sort-btn" id="sortTPSDesc" title="Max TPS (Fastest)">
-                <span>Speed</span><span style="font-size:0.9em;">▼</span>
-            </button>
+            <label for="modelSortSelect">Sort</label>
+            <select id="modelSortSelect">
+                <option value="name:asc">Name A to Z</option>
+                <option value="name:desc">Name Z to A</option>
+                <option value="size:asc">Size: smallest first</option>
+                <option value="size:desc">Size: largest first</option>
+                <option value="tps:asc">Max TPS: slowest first</option>
+                <option value="tps:desc">Max TPS: fastest first</option>
+            </select>
             </div>
         </div>
 
@@ -223,6 +226,33 @@
 
     </div>
     </div>
+    <section id="speechModelPanel" class="model-tab-panel analytics-tab-panel" role="tabpanel" aria-labelledby="speechModelTab" hidden>
+        <div class="model-drawer-grid">
+            <div class="model-settings">
+                {% if session.get('role') == 'admin' %}
+                <div class="form-row speech-model-picker">
+                    <label for="speechModelSelect">Speech-to-Text Model</label>
+                    <select id="speechModelSelect"><option value="">Select a speech model</option></select>
+                </div>
+                <p class="refresh-notice">Choose an enabled speech model, then Start before dictating.</p>
+                <div class="button-row">
+                    <button id="speechStart" class="start-model-btn" type="button">🚀 Start</button>
+                    <button id="speechStop" class="stop-model-btn" type="button">🛑 Stop</button>
+                </div>
+                {% else %}
+                <p class="refresh-notice">An administrator selects and starts the shared speech model.</p>
+                {% endif %}
+            </div>
+            <div class="model-details wide">
+                <h3>🎙️ Speech-to-Text Details</h3>
+                <p><b>Status:</b> <span id="speechStatus" role="status">⏸ Stopped</span></p>
+                <p><b>Current Model:</b> <span id="speechRunningModel">None</span></p>
+                <p><b>Device:</b> <span id="speechDevice">-</span></p>
+                <p id="speechMessage" aria-live="polite"></p>
+            </div>
+        </div>
+    </section>
+    </div>
     {% endif %}
 
     <div id="logsDrawer" class="drawer">
@@ -233,7 +263,20 @@
         {% if session.get('role') == 'admin' %}<button id="btnLogClear">🗑️ Clear Logs</button>{% endif %}
         <button class="drawer-close-btn" onclick="closeAllDrawers()">✖</button>
         </div>
-        <pre id="logContent">Logs will appear here...</pre>
+        {% if session.get('role') == 'admin' %}
+        <div class="drawer-tabs" role="tablist" aria-label="Logs">
+            <button id="languageLogsTab" class="drawer-tab active" type="button" role="tab" aria-selected="true" aria-controls="languageLogsPanel" tabindex="0">Language Model</button>
+            <button id="speechLogsTab" class="drawer-tab" type="button" role="tab" aria-selected="false" aria-controls="speechLogsPanel" tabindex="-1">Speech-to-Text</button>
+        </div>
+        {% endif %}
+        <section id="languageLogsPanel" class="logs-tab-panel analytics-tab-panel" {% if session.get('role') == 'admin' %}role="tabpanel" aria-labelledby="languageLogsTab"{% endif %}>
+            <pre id="logContent">Logs will appear here...</pre>
+        </section>
+        {% if session.get('role') == 'admin' %}
+        <section id="speechLogsPanel" class="logs-tab-panel analytics-tab-panel" role="tabpanel" aria-labelledby="speechLogsTab" hidden>
+            <pre id="speechLogs">Logs will appear here...</pre>
+        </section>
+        {% endif %}
     </div>
     
 <div id="smiDrawer" class="drawer">
@@ -286,15 +329,21 @@
             📊 Analytics
             <button class="drawer-close-btn" onclick="closeAllDrawers()">✖</button>
         </div>
+        {% if session.get('role') == 'admin' %}
+        <div class="drawer-tabs" role="tablist" aria-label="Analytics views">
+            <button id="analyticsChatTab" class="drawer-tab active" type="button" role="tab" aria-selected="true" aria-controls="analyticsChatPanel" data-analytics-tab="chat">Chat Analytics</button>
+            <button id="analyticsApiTab" class="drawer-tab" type="button" role="tab" aria-selected="false" aria-controls="analyticsApiPanel" tabindex="-1" data-analytics-tab="api">API Analytics</button>
+        </div>
+        {% endif %}
         <div class="analytics-content">
-            {% if session.get('role') == 'admin' %}
-            <div class="analytics-tabs" role="tablist" aria-label="Analytics views">
-                <button id="analyticsChatTab" class="analytics-tab active" type="button" role="tab" aria-selected="true" aria-controls="analyticsChatPanel" data-analytics-tab="chat">Chat Analytics</button>
-                <button id="analyticsApiTab" class="analytics-tab" type="button" role="tab" aria-selected="false" aria-controls="analyticsApiPanel" tabindex="-1" data-analytics-tab="api">API Analytics</button>
-            </div>
-            {% endif %}
             <section id="analyticsChatPanel" class="analytics-tab-panel" {% if session.get('role') == 'admin' %}role="tabpanel" aria-labelledby="analyticsChatTab"{% endif %}>
                 <div class="refresh-notice">Includes all generated responses, including regenerate and edit variants.</div>
+                {% if session.get('role') == 'admin' %}
+                <div class="analytics-model-filter">
+                    <label title="Filter model rows only; totals include all models."><input id="analyticsEnabledOnly" type="checkbox"> Enabled models only</label>
+                    <span id="analyticsFilterStatus" role="status"></span>
+                </div>
+                {% endif %}
                 <div id="analyticsDashboard" class="analytics-dashboard" aria-live="polite">Loading analytics...</div>
             </section>
             {% if session.get('role') == 'admin' %}
@@ -661,6 +710,10 @@
               </div>
             </div>
             <div class="form-row">
+              <label for="modelPickerShowFriendlyNames">Show friendly names in Model picker</label>
+              <input type="checkbox" id="modelPickerShowFriendlyNames" style="width:auto;">
+            </div>
+            <div class="form-row">
               <label for="scanDirectoryInput">Models DIR:</label>
               <input type="text" id="scanDirectoryInput">
             </div>
@@ -700,6 +753,7 @@
 
         </section>
 
+        <div class="admin-settings-column">
         <section class="admin-section admin-api-section">
         <div class="admin-section-heading">
             <h3>API Access</h3>
@@ -749,6 +803,16 @@
           <div class="admin-inline-status">OpenAI-compatible API. Use the Base URL above and your generated API key with compatible applications and libraries.</div>
         </div>
         </section>
+
+        <section class="admin-section admin-speech-section">
+            <div class="admin-section-heading"><h3>Speech-to-Text Runtime</h3></div>
+            <div class="params-grid">
+                <div class="form-row"><label for="speechRuntimePathInput">Speech runtime path:</label><input id="speechRuntimePathInput" type="text" placeholder="Speech environment's Python executable"></div>
+                <div class="form-row"><label for="speechPortInput">Speech service port:</label><input id="speechPortInput" type="number" min="1" max="65535"></div>
+            </div>
+            <p class="refresh-notice">Uses an operator-installed local speech environment. Stop and start Speech-to-Text after changing runtime settings.</p>
+        </section>
+        </div>
 
         <section class="admin-section admin-section-wide admin-attachments-section">
         <div class="admin-section-heading">
@@ -902,6 +966,13 @@
     <div class="user-modal-card">
       <button type="button" class="user-close-btn" onclick="toggleUserSettingsModal(false)">✖</button>
       <h3>Account Settings</h3>
+      <p class="muted-note account-email">{{ session.get('email', '') }}</p>
+      <div class="drawer-tabs" role="tablist" aria-label="Account settings">
+        <button id="accountInstructionsTab" class="drawer-tab active" type="button" role="tab" aria-selected="true" aria-controls="accountInstructionsPanel" tabindex="0">Instructions</button>
+        <button id="accountEmailTab" class="drawer-tab" type="button" role="tab" aria-selected="false" aria-controls="accountEmailPanel" tabindex="-1">Email</button>
+        <button id="accountPasswordTab" class="drawer-tab" type="button" role="tab" aria-selected="false" aria-controls="accountPasswordPanel" tabindex="-1">Password</button>
+      </div>
+      <section id="accountInstructionsPanel" class="analytics-tab-panel" role="tabpanel" aria-labelledby="accountInstructionsTab">
       <form id="systemInstructionsForm">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <label for="systemInstructionsInput">System Instructions:</label>
@@ -909,12 +980,13 @@
           placeholder="Example: Be concise, use metric units, and explain assumptions."
           aria-describedby="system-instructions-note"></textarea>
         <div id="system-instructions-note" class="muted-note">
-          Applied to future browser chats only. Leave blank to disable.
+          Applied to subsequent browser chat requests. Leave blank to disable.
         </div>
         <button type="submit" class="btn save-btn">Save System Instructions</button>
         <div id="system-instructions-alert" aria-live="polite"></div>
       </form>
-      <hr>
+      </section>
+      <section id="accountEmailPanel" class="analytics-tab-panel" role="tabpanel" aria-labelledby="accountEmailTab" hidden>
       <form id="changeEmailForm">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <label>Request Email Change:<br>
@@ -927,7 +999,8 @@
         <button type="submit" class="btn save-btn">Change Email</button>
         <div id="change-email-alert"></div>
       </form>
-      <hr>
+      </section>
+      <section id="accountPasswordPanel" class="analytics-tab-panel" role="tabpanel" aria-labelledby="accountPasswordTab" hidden>
       <form id="changePasswordForm">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <label>Current Password:<br>
@@ -950,6 +1023,7 @@
         <button type="submit" class="btn save-btn">Change Password</button>
         <div id="change-password-alert"></div>
       </form>
+      </section>
     </div>
   </div>
     
@@ -1147,7 +1221,7 @@
             const data = await res.json();
             if (data.status === "success") {
             showCustomAlert("Import successful!");
-            loadChatHistory();
+            await Promise.all([loadChatHistory(), loadProjects()]);
             } else {
             showCustomAlert("Import error: " + (data.message || "Unknown error"));
             }

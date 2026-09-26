@@ -43,7 +43,7 @@ def _request_wants_json():
     return (
         request.is_json
         or request.accept_mimetypes.best == 'application/json'
-        or path.startswith(('/api/', '/chat/', '/model/', '/settings/', '/analytics/', '/benchmark/'))
+        or path.startswith(('/api/', '/chat/', '/model/', '/settings/', '/analytics/', '/benchmark/', '/speech/'))
     )
 
 def get_db():
@@ -107,41 +107,6 @@ def token_is_expired(expires_at, now=None):
             comparison_now = comparison_now.replace(tzinfo=None)
 
     return expires_at <= comparison_now
-
-def clear_reset_token_fields(db, user_id):
-    cursor = None
-    try:
-        cursor = db.cursor()
-        cursor.execute(
-            "UPDATE llm_users SET reset_token_hash=NULL, reset_token_expires_at=NULL WHERE id=%s",
-            (user_id,)
-        )
-    finally:
-        if cursor is not None:
-            try:
-                cursor.close()
-            except Exception:
-                pass
-
-def clear_email_confirm_token_fields(db, user_id):
-    cursor = None
-    try:
-        cursor = db.cursor()
-        cursor.execute(
-            """
-            UPDATE llm_users
-               SET email_confirm_token_hash=NULL,
-                   email_confirm_token_expires_at=NULL
-             WHERE id=%s
-            """,
-            (user_id,)
-        )
-    finally:
-        if cursor is not None:
-            try:
-                cursor.close()
-            except Exception:
-                pass
 
 def _coerce_session_version(value, default=None):
     if value is None or value == "":

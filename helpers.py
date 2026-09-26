@@ -1,16 +1,12 @@
 import os
 import sqlite3
-import requests
 import uuid
 import time
-import datetime
 import math
 import re
-import threading
 import secrets
-from flask_socketio import SocketIO
 import string
-from app_settings import get_password_policy
+from app_settings import MAX_PASSWORD_BYTES, get_password_policy
 
 def get_password_settings():
     return {
@@ -19,7 +15,9 @@ def get_password_settings():
 
 def generate_temp_password(settings):
     policy = settings["password_policy"]
-    length = policy.get("min_length", 8)
+    length = int(policy.get("min_length", 8))
+    if not 6 <= length <= MAX_PASSWORD_BYTES:
+        raise ValueError(f"Set the password policy minimum to 6–{MAX_PASSWORD_BYTES} characters before creating users.")
     chars = ""
     required = []
 

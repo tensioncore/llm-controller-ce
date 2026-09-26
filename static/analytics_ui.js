@@ -18,6 +18,47 @@
       return Array.isArray(value) ? value : [];
     }
 
+    let modelFilterRequest = 0;
+
+    async function applyEnabledModelFilter() {
+      const toggle = document.getElementById("analyticsEnabledOnly");
+      if (!toggle) return;
+      const request = ++modelFilterRequest;
+      const status = document.getElementById("analyticsFilterStatus");
+      const rows = () => Array.from(document.querySelectorAll("#analyticsTable tbody tr[data-model]"));
+      if (!toggle.checked) {
+        rows().forEach(row => { row.hidden = false; });
+        status.textContent = "";
+        return;
+      }
+      status.textContent = "Checking enabled models…";
+      try {
+        const prefix = window.MODEL_PREFIX || "/model";
+        const data = await window.ApiHttp.requestJSON(`${prefix}/registry/list`, { cache: "no-store" });
+        if (request !== modelFilterRequest) return;
+        const normalize = value => String(value || "").replace(/\\/g, "/").toLowerCase();
+        const registry = asArray(data.models).slice().sort((a, b) =>
+          String(b.model_path || "").length - String(a.model_path || "").length);
+        let visible = 0;
+        rows().forEach(row => {
+          const model = normalize(row.dataset.model);
+          const match = registry.find(item => {
+            const path = normalize(item.model_path);
+            return path && (model === path || model.endsWith(`/${path}`));
+          }) || (!model.includes("/") && registry.find(item =>
+            normalize(item.model_name) === model));
+          row.hidden = !match || Number(match.is_enabled) !== 1;
+          if (!row.hidden) visible++;
+        });
+        status.textContent = visible ? "Totals include all models." : "No enabled models in this history. Totals include all models.";
+      } catch (error) {
+        if (request !== modelFilterRequest) return;
+        toggle.checked = false;
+        rows().forEach(row => { row.hidden = false; });
+        status.textContent = "Could not load enabled models. Showing all models.";
+      }
+    }
+
     function fetchChatAnalytics() {
       const prefix = (typeof window.ANALYTICS_PREFIX === "string"
         ? window.ANALYTICS_PREFIX
@@ -89,7 +130,7 @@
             if (maxAvgTps <= 0) maxAvgTps = 1;
 
             const modelName = escapeHtml(prettifyModelName(model));
-            html += "<tr>";
+            html += `<tr data-model="${escapeHtml(model)}">`;
             html += `<td class="analytics-model-cell" title="${modelName}"><span class="analytics-model-name">${modelName}</span></td>`;
             html += `<td class="analytics-number">${models[model].total_requests.toLocaleString()}</td>`;
             html += `<td class="analytics-number">${models[model].avg_response_time}</td>`;
@@ -115,6 +156,7 @@
           if (dash) dash.innerHTML = html;
   
           if (document.getElementById("analyticsTable")) window.sortTable('analyticsTable', 4, true, true);
+          applyEnabledModelFilter();
   
         })
         .catch(error => {
@@ -282,6 +324,7 @@
     }
 
     function initializeAnalyticsTabs() {
+      document.getElementById("analyticsEnabledOnly")?.addEventListener("change", applyEnabledModelFilter);
       const tabs = Array.from(document.querySelectorAll("[data-analytics-tab]"));
       tabs.forEach((tab, index) => {
         tab.addEventListener("click", () => selectAnalyticsTab(tab.dataset.analyticsTab));
@@ -351,8 +394,8 @@
             return 0;
           }
       
-          let aText = (aCell.innerText || "").trim();
-          let bText = (bCell.innerText || "").trim();
+          let aText = (aCell.textContent || "").trim();
+          let bText = (bCell.textContent || "").trim();
       
           if (colIndex === 2) {
             const parseTimeToSeconds = (text) => {

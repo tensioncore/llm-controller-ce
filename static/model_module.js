@@ -6,6 +6,31 @@
 
   let mainPicker = null;
   let titlePicker = null;
+  let modelsLoaded = false;
+  let pickerStatus = null;
+  let resolvedSelection = null;
+  let showFriendlyNames = false;
+
+  function resolveMainSelection() {
+    if (!modelsLoaded || !pickerStatus || !mainPicker) return;
+    const running = pickerStatus.status === "running";
+    const preferred = running
+      ? window.models.find(model => model.path_key === pickerStatus.current_model_key)
+      : window.models.find(model => yn(model.is_favorite));
+    const value = preferred ? String(preferred.value || "") : "";
+    const selection = JSON.stringify([pickerStatus.status, pickerStatus.current_model_key || "", value]);
+    // Repeated status polls/list refreshes must not erase a manual choice for the next Start.
+    if (selection !== resolvedSelection || (value && !window.selectedModelValue)) {
+      mainPicker.setValue(value);
+      resolvedSelection = selection;
+    }
+  }
+
+  window.syncModelPickerStatus = function syncModelPickerStatus(data) {
+    if (!data || !["running", "stopped"].includes(data.status)) return;
+    pickerStatus = data;
+    resolveMainSelection();
+  };
 
   function asNum(v, def = 0) {
     const n = Number(v);
@@ -38,14 +63,15 @@
     return value > 0 ? `Max ${Math.round(value)} TPS` : "Max TPS —";
   }
 
-  function appendModelSummary(target, model) {
+  function appendModelSummary(target, model, useFriendlyNames = false) {
     target.textContent = "";
     const primary = document.createElement("div");
     primary.className = "model-picker-primary";
 
     const name = document.createElement("span");
     name.className = "model-name";
-    name.textContent = `${yn(model.is_favorite) ? "⭐ " : ""}${String(model.name || model.value || "Unknown model")}`;
+    const friendlyName = useFriendlyNames ? String(model.friendly_name || "").trim() : "";
+    name.textContent = `${yn(model.is_favorite) ? "⭐ " : ""}${friendlyName || String(model.name || model.value || "Unknown model")}`;
     if (String(model.mmproj_path || "").trim()) {
       const imageMarker = document.createElement("span");
       imageMarker.className = "model-img-marker";
@@ -164,7 +190,7 @@
       option.setAttribute("tabindex", "-1");
       option.setAttribute("aria-selected", currentValue() === String(value || "") ? "true" : "false");
       if (model) {
-        appendModelSummary(option, model);
+        appendModelSummary(option, model, config.useFriendlyNames && showFriendlyNames);
       } else {
         const prompt = document.createElement("span");
         prompt.className = "model-picker-placeholder";
@@ -187,7 +213,7 @@
       pickerModels.forEach(model => list.appendChild(makeOption(model.value, model)));
 
       if (current) {
-        appendModelSummary(selected, current);
+        appendModelSummary(selected, current, config.useFriendlyNames && showFriendlyNames);
       } else {
         selected.textContent = "";
         const prompt = document.createElement("span");
@@ -290,6 +316,7 @@
         selectedId: "dropdown-selected",
         listId: "dropdownList",
         ariaLabel: "Chat model",
+        useFriendlyNames: true,
         placeholder: "Select a model…",
         getValue: () => window.selectedModelValue || "",
         setValue: (value) => {
@@ -371,10 +398,13 @@
     try {
       const data = await fetchJsonOrThrow("/model/registry/dropdown");
       window.models = (data && Array.isArray(data.models)) ? data.models : [];
+      showFriendlyNames = yn(data.show_friendly_names);
+      modelsLoaded = true;
       window.sortModels(window.currentModelSort.by, window.currentModelSort.dir === "asc");
       ensurePickers();
       if (mainPicker) mainPicker.setModels(window.models);
       if (titlePicker) titlePicker.setModels(window.models);
+      resolveMainSelection();
     } catch (err) {
       console.error("[model_module] loadModelDropdown failed:", err);
     }
@@ -406,26 +436,22 @@
     if (titlePicker) titlePicker.close();
     window.loadModelDropdown();
 
-    [
-      { id: "sortNameAsc", by: "name", dir: "asc" },
-      { id: "sortNameDesc", by: "name", dir: "desc" },
-      { id: "sortSizeAsc", by: "size", dir: "asc" },
-      { id: "sortSizeDesc", by: "size", dir: "desc" },
-      { id: "sortTPSAsc", by: "tps", dir: "asc" },
-      { id: "sortTPSDesc", by: "tps", dir: "desc" }
-    ].forEach(({ id, by, dir }) => {
-      const btn = document.getElementById(id);
-      if (btn) btn.onclick = () => {
+    const sortSelect = document.getElementById("modelSortSelect");
+    if (sortSelect) {
+      sortSelect.value = `${window.currentModelSort.by}:${window.currentModelSort.dir}`;
+      sortSelect.addEventListener("change", () => {
+        const [by, dir] = sortSelect.value.split(":");
         window.currentModelSort = { by, dir };
         window.sortModels(by, dir === "asc");
         window.renderModelDropdown();
-      };
-    });
+      });
+    }
 
     fetch("/model/model_status", { credentials: "same-origin" })
       .then(res => res.json())
       .then(data => {
         window.updateTitleModelStatus(data);
+        window.syncModelPickerStatus(data);
         if (!data || data.status !== "running") {
           const drawer = document.getElementById("modelDrawer");
           if (drawer && !drawer.classList.contains("open")) {

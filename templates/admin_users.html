@@ -103,7 +103,7 @@
         </label>
         <p id="pw_policy_description" class="password-policy-description" aria-live="polite"></p>
         <div id="pw_custom_options" class="password-policy-custom" {% if settings.password_policy.level != 'custom' %}hidden{% endif %}>
-            <label class="password-policy-length">Min Length <input type="number" name="min_length" value="{{ settings.password_policy.min_length }}" min="6" max="128"></label>
+            <label class="password-policy-length">Min Length <input type="number" name="min_length" value="{{ settings.password_policy.min_length }}" min="6" max="{{ settings.password_policy.max_bytes }}"></label>
             <label><input type="checkbox" name="require_upper" {% if settings.password_policy.require_upper %}checked{% endif %}> Require uppercase</label>
             <label><input type="checkbox" name="require_lower" {% if settings.password_policy.require_lower %}checked{% endif %}> Require lowercase</label>
             <label><input type="checkbox" name="require_digit" {% if settings.password_policy.require_digit %}checked{% endif %}> Require digit</label>
@@ -121,7 +121,7 @@
         basic: "At least 6 characters, including a lowercase letter.",
         moderate: "At least 8 characters, including uppercase, lowercase, and a digit.",
         strong: "At least 12 characters, including uppercase, lowercase, a digit, and a special character.",
-        custom: "Choose a length from 6 to 128 characters and select each required character type."
+        custom: "Choose a length from 6 to {{ settings.password_policy.max_bytes }} characters and select each required character type. Passwords are limited to {{ settings.password_policy.max_bytes }} UTF-8 bytes; some characters use more than one byte."
     });
 
     function syncPasswordPolicyUi() {

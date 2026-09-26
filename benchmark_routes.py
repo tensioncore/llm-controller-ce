@@ -46,7 +46,7 @@ CE_BENCHMARK_PROMPT_LIMIT = 5
 CE_PROMPTS_INVALIDATED_FAIL_REASON = "ce_prompts_updated"
 
 def _emit_to_user(user_id, event, payload):
-    # Your chat system already uses user_{user_id} rooms.
+    # Chat sockets use user_{user_id} rooms.
     # NOTE: The UI may not always be joined to this room (esp. after refresh),
     # so the drawer uses /status polling for truth. Emits are "nice to have".
     try:
@@ -70,32 +70,6 @@ def _fmt_ts(ts_int):
         return datetime.datetime.fromtimestamp(int(ts_int)).strftime("%Y-%m-%d %H:%M:%S")
     except Exception:
         return ""
-
-def _norm_model_key(s: str) -> str:
-    """
-    Normalize a model name/path into a comparable key.
-    - lowercased
-    - slashes normalized
-    - trim whitespace
-    """
-    if s is None:
-        return ""
-    try:
-        s = str(s).strip()
-    except Exception:
-        return ""
-    s = s.replace("\\", "/").strip().lower()
-    return s
-
-def _basename_key(s: str) -> str:
-    """
-    Return the last path component (folder/file name) as a normalized key.
-    """
-    s = _norm_model_key(s)
-    if not s:
-        return ""
-    parts = [p for p in s.split("/") if p]
-    return parts[-1] if parts else s
 
 def get_ce_prompt_bundle():
     prompt_set = get_prompt_set(CE_BENCHMARK_PROMPTSET_NAME, CE_BENCHMARK_PROMPTSET_VERSION)
@@ -201,7 +175,7 @@ def _get_registry_models_for_bench(include_disabled: bool = False):
     db = mysql_conn()
     cur = db.cursor(dictionary=True)
     try:
-        where = ["is_present=1", "allow_benchmark=1", "is_projector=0"]
+        where = ["is_present=1", "allow_benchmark=1", "is_projector=0", "is_s2t=0", "LOWER(model_path) LIKE '%.gguf'"]
         if not include_disabled:
             where.append("is_enabled=1")
 

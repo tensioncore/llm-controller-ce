@@ -1,4 +1,3 @@
-import os
 import json
 import hashlib
 import secrets
@@ -27,8 +26,8 @@ from bootstrap_config import DEFAULT_BOOTSTRAP_CONFIG, get_bootstrap_config, sav
 from installer_service import connect_mysql_server
 
 from db_mysql import mysql_conn
-from app_settings import get_setting, set_setting, get_password_policy, get_all_settings_rows
-from extensions import SOCKET_MAX_HTTP_BUFFER_BYTES
+from app_settings import MAX_PASSWORD_BYTES, password_input_error, get_setting, set_setting, get_password_policy, get_all_settings_rows
+from extensions import ATTACHMENT_MAX_FILE_BYTES, ATTACHMENT_MAX_TOTAL_BYTES
 from runtime_config import get_chat_import_max_mib, validate_scan_directory_value
 from smtp_credentials import (
     MAX_SMTP_PASSWORD_BYTES,
@@ -50,7 +49,6 @@ PASSWORD_POLICIES = {
     "strong":   {"min_length": 12, "require_upper": True,  "require_lower": True,  "require_digit": True,  "require_special": True},
 }
 
-MAX_ATTACHMENT_TRANSPORT_BYTES = SOCKET_MAX_HTTP_BUFFER_BYTES
 SMTP_PASSWORD_MASK = "********"
 API_KEY_SETTING = "llm.api.key_hash"
 
@@ -111,10 +109,10 @@ def _get_db_int_setting(key, minimum=None):
     return value
 
 
-def _clamp_attachment_transport_limit(value):
+def _clamp_attachment_limit(value, maximum):
     if value is None:
         return None
-    return min(int(value), MAX_ATTACHMENT_TRANSPORT_BYTES)
+    return min(int(value), maximum)
 
 
 def _parse_bool_payload(value):
@@ -171,7 +169,7 @@ def _validate_title_model_selection(model_path):
              WHERE model_path=%s
                AND is_enabled=1
                AND is_present=1
-               AND is_projector=0
+               AND is_projector=0 AND is_s2t=0 AND LOWER(model_path) LIKE '%.gguf'
              LIMIT 1
             """,
             (selected,),
@@ -252,8 +250,8 @@ def validate_password_policy(data):
         except Exception:
             errors["min_length"] = "Min length must be an integer."
             min_length = 0
-        if min_length < 6 or min_length > 128:
-            errors["min_length"] = "Min length must be 6–128."
+        if min_length < 6 or min_length > MAX_PASSWORD_BYTES:
+            errors["min_length"] = f"Min length must be 6–{MAX_PASSWORD_BYTES}."
         for field in ["require_upper", "require_lower", "require_digit", "require_special"]:
             if field not in data:
                 errors[field] = f"Missing field: {field}"
@@ -267,8 +265,13 @@ def validate_password_policy(data):
 def check_password_complexity(pw: str):
     policy = get_password_policy()
 
+    input_error = password_input_error(pw)
+    if input_error:
+        return [input_error]
     errors = []
     min_length = int(policy.get("min_length", 12))
+    if not 6 <= min_length <= MAX_PASSWORD_BYTES:
+        return [f"The configured password minimum must be 6–{MAX_PASSWORD_BYTES} characters. Ask an administrator to update the password policy."]
     require_upper = bool(policy.get("require_upper", True))
     require_lower = bool(policy.get("require_lower", True))
     require_digit = bool(policy.get("require_digit", True))
@@ -405,6 +408,20 @@ def validate_settings_payload(data):
     check_int("seed", 0, 2**31 - 1)
     check_optional_int("llama_main_port", 1, 65535)
     check_optional_int("llama_title_port", 1, 65535)
+    check_optional_int("speech_port", 1, 65535)
+    if "speech_runtime_path" in data and not isinstance(data["speech_runtime_path"], str):
+        errors["speech_runtime_path"] = "Enter the path to the speech environment's Python interpreter."
+    try:
+        speech_port = int(data.get("speech_port", get_setting("speech.s2t.port", default=8082)))
+        other_ports = {
+            int(data.get("llama_main_port", get_setting("llama.main.port"))),
+            int(data.get("llama_title_port", get_setting("llama.title.port"))),
+            int(current_app.config.get("BOOTSTRAP_CONFIG", {}).get("app_port", 5000)),
+        }
+        if speech_port in other_ports:
+            errors["speech_port"] = "Use a port different from the app, language model and title model."
+    except (TypeError, ValueError):
+        errors["speech_port"] = "Enter a port between 1 and 65535."
     if "db_port" in data and str(data.get("db_port", "")).strip():
         try:
             db_port = int(data.get("db_port"))
@@ -414,8 +431,14 @@ def validate_settings_payload(data):
             errors["db_port"] = "Must be integer between 1 and 65535"
     check_optional_int("chat_import_max_mib", 10, 1024)
     check_optional_int("attachments_max_files", 1, 1000)
-    check_optional_int("attachments_max_file_bytes", 1, MAX_ATTACHMENT_TRANSPORT_BYTES)
-    check_optional_int("attachments_max_total_bytes", 1, MAX_ATTACHMENT_TRANSPORT_BYTES)
+    for field, maximum in (("attachments_max_file_bytes", ATTACHMENT_MAX_FILE_BYTES),
+                           ("attachments_max_total_bytes", ATTACHMENT_MAX_TOTAL_BYTES)):
+        if field in data:
+            try:
+                if not 1 <= int(data[field]) <= maximum:
+                    raise ValueError()
+            except (TypeError, ValueError):
+                errors[field] = f"Enter a size greater than 0 and at most {maximum // (1024 * 1024)} MiB."
     check_optional_int("attachments_max_context_chars", 1, 2**31 - 1)
     check_optional_int("attachments_chunk_max_lines", 1, 100000)
     check_optional_int("attachments_chunk_overlap_lines", 0, 100000)
@@ -429,7 +452,7 @@ def validate_settings_payload(data):
         if raw_base_url and not normalize_auth_public_base_url(raw_base_url):
             errors["auth_public_base_url"] = "Must be a valid http(s) URL without username, password, query, or fragment"
 
-    for field in ("auth_smtp_enabled", "auth_smtp_use_tls", "api_enabled"):
+    for field in ("auth_smtp_enabled", "auth_smtp_use_tls", "api_enabled", "model_picker_show_friendly_names"):
         if field in data and str(data.get(field)).lower() not in ("true", "false", "1", "0", "on", "off"):
             errors[field] = "Must be true or false"
 
@@ -631,11 +654,11 @@ def change_password():
 def get_settings():
     version = _get_db_setting("app.version")
     attachments_max_files = _get_db_int_setting("llm.attachments.max_files", minimum=1)
-    attachments_max_file_bytes = _clamp_attachment_transport_limit(
-        _get_db_int_setting("llm.attachments.max_file_bytes", minimum=1)
+    attachments_max_file_bytes = _clamp_attachment_limit(
+        _get_db_int_setting("llm.attachments.max_file_bytes", minimum=1), ATTACHMENT_MAX_FILE_BYTES
     )
-    attachments_max_total_bytes = _clamp_attachment_transport_limit(
-        _get_db_int_setting("llm.attachments.max_total_bytes", minimum=1)
+    attachments_max_total_bytes = _clamp_attachment_limit(
+        _get_db_int_setting("llm.attachments.max_total_bytes", minimum=1), ATTACHMENT_MAX_TOTAL_BYTES
     )
     policy = get_password_policy()
     payload = {
@@ -708,6 +731,8 @@ def get_settings():
         "db_port": bootstrap_config.get("db_port", DEFAULT_BOOTSTRAP_CONFIG["db_port"]),
         "scan_directory": scan_directory,
         "llama_server_path": llama_server_path,
+        "speech_runtime_path": str(get_setting("speech.s2t.runtime_path", default="") or ""),
+        "speech_port": int(get_setting("speech.s2t.port", default=8082)),
         "llama_main_port": llama_main_port,
         "llama_title_port": llama_title_port,
         "n_gpu_layers": n_gpu_layers,
@@ -722,6 +747,7 @@ def get_settings():
         "attachments_chunk_max_lines": attachments_chunk_max_lines,
         "attachments_chunk_overlap_lines": attachments_chunk_overlap_lines,
         "title_model_path": str(_get_db_setting("llm.title_model_path") or ""),
+        "model_picker_show_friendly_names": get_setting("llm.model_picker.show_friendly_names", default=False, cast=bool),
         "api": _api_access_status(),
         "auth": {
             "email_confirmation_ready": auth_email_ready,
@@ -867,11 +893,11 @@ def update_settings():
         llama_main_port = _payload_or_current("llama_main_port", "llama.main.port", 1)
         llama_title_port = _payload_or_current("llama_title_port", "llama.title.port", 1)
         attachments_max_files = _payload_or_current("attachments_max_files", "llm.attachments.max_files", 1)
-        attachments_max_file_bytes = _clamp_attachment_transport_limit(
-            _payload_or_current("attachments_max_file_bytes", "llm.attachments.max_file_bytes", 1)
+        attachments_max_file_bytes = _clamp_attachment_limit(
+            _payload_or_current("attachments_max_file_bytes", "llm.attachments.max_file_bytes", 1), ATTACHMENT_MAX_FILE_BYTES
         )
-        attachments_max_total_bytes = _clamp_attachment_transport_limit(
-            _payload_or_current("attachments_max_total_bytes", "llm.attachments.max_total_bytes", 1)
+        attachments_max_total_bytes = _clamp_attachment_limit(
+            _payload_or_current("attachments_max_total_bytes", "llm.attachments.max_total_bytes", 1), ATTACHMENT_MAX_TOTAL_BYTES
         )
         attachments_max_context_chars = _payload_or_current("attachments_max_context_chars", "llm.attachments.max_context_chars", 1)
         attachments_chunk_max_lines = _payload_or_current("attachments_chunk_max_lines", "llm.attachments.chunk_max_lines", 1)
@@ -930,6 +956,10 @@ def update_settings():
 
     set_setting("llm.scan_directory", scan_directory_value, "string", updated_by_user_id=uid)
     set_setting("llm.llama_server_path", llama_server_path_value, "string", updated_by_user_id=uid)
+    if "speech_runtime_path" in data:
+        set_setting("speech.s2t.runtime_path", data["speech_runtime_path"].strip(), "string", updated_by_user_id=uid)
+    if "speech_port" in data:
+        set_setting("speech.s2t.port", int(data["speech_port"]), "int", updated_by_user_id=uid)
     set_setting("llama.main.port", int(llama_main_port), "int", updated_by_user_id=uid)
     set_setting("llama.title.port", int(llama_title_port), "int", updated_by_user_id=uid)
     set_setting("llm.defaults.n_gpu_layers", int(data["n_gpu_layers"]), "int", updated_by_user_id=uid)
@@ -948,6 +978,8 @@ def update_settings():
     set_setting("llm.attachments.max_context_chars", int(attachments_max_context_chars), "int", updated_by_user_id=uid)
     set_setting("llm.attachments.chunk_max_lines", int(attachments_chunk_max_lines), "int", updated_by_user_id=uid)
     set_setting("llm.attachments.chunk_overlap_lines", int(attachments_chunk_overlap_lines), "int", updated_by_user_id=uid)
+    if "model_picker_show_friendly_names" in data:
+        set_setting("llm.model_picker.show_friendly_names", data["model_picker_show_friendly_names"], "bool", updated_by_user_id=uid)
     if title_model_path_value is not None:
         set_setting("llm.title_model_path", title_model_path_value, "string", updated_by_user_id=uid)
     if api_enabled_value is not None:

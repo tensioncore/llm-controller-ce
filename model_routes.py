@@ -179,16 +179,6 @@ def _as01(v) -> int:
     return 0
 
 
-def _stable_relpath_for_fp(full_path: str) -> str:
-    try:
-        rel = os.path.relpath(full_path, BASE_DIR)
-    except Exception:
-        rel = os.path.basename(full_path)
-
-    rel = os.path.normpath(rel).replace("\\", "/")
-    return rel
-
-
 def _parse_split_gguf_filename(filename: str):
     match = SPLIT_GGUF_PATTERN.match(str(filename or "").strip())
     if not match:
@@ -404,7 +394,7 @@ def _scan_llms_files():
 
     for root, dirs, files in os.walk(base_model_folder):
         for filename in files:
-            if not filename.lower().endswith(".gguf"):
+            if not filename.lower().endswith((".gguf", ".nemo")):
                 continue
 
             full_path = os.path.normpath(os.path.join(root, filename))
@@ -544,13 +534,13 @@ def registry_list(include_disabled=True):
 
     where = ""
     if not include_disabled:
-        where = "WHERE is_enabled=1 AND is_projector=0"
+        where = "WHERE is_enabled=1 AND is_projector=0 AND is_s2t=0 AND LOWER(model_path) LIKE '%.gguf'"
 
     sql = f"""
         SELECT
             id, fingerprint, model_name, friendly_name, model_path, file_size, mtime,
             first_seen_at, last_seen_at,
-            is_enabled, is_favorite, allow_benchmark, is_projector, is_present,
+            is_enabled, is_favorite, allow_benchmark, is_projector, is_s2t, is_present,
             notes, profile_general, profile_coding, profile_writing,
             profile_reasoning, profile_math, profile_agents, profile_images,
             mmproj_path
@@ -584,11 +574,11 @@ def _find_registry_model_by_path(model_path, enabled_present_only=False):
     conn = mysql_conn()
     cur = conn.cursor(dictionary=True)
     try:
-        where = "WHERE is_enabled=1 AND is_present=1 AND is_projector=0" if enabled_present_only else ""
+        where = "WHERE is_enabled=1 AND is_present=1 AND is_projector=0 AND is_s2t=0 AND LOWER(model_path) LIKE '%.gguf'" if enabled_present_only else ""
         cur.execute(f"""
             SELECT
                 id, fingerprint, model_name, friendly_name, model_path, file_size, mtime,
-                is_enabled, is_favorite, allow_benchmark, is_projector, is_present,
+                is_enabled, is_favorite, allow_benchmark, is_projector, is_s2t, is_present,
                 notes, profile_general, profile_coding, profile_writing,
                 profile_reasoning, profile_math, profile_agents, profile_images,
                 mmproj_path
@@ -931,10 +921,6 @@ def get_gpu_backend_state(executable_path=None):
 
 def get_inference_runtime_capabilities(executable_path=None):
     return get_gpu_backend_state(executable_path)
-
-
-def get_gpu_count():
-    return int(get_gpu_backend_state().get("gpu_count") or 0)
 
 
 def _log_gpu_launch_decision(capabilities, allowed: bool, reason: str):
@@ -1395,10 +1381,14 @@ def start_model():
         elif not os.path.isfile(model_path):
             errors['model_path'] = f"Valid model_path required (got: {model_path})"
 
+    if model_path and not model_path.lower().endswith(".gguf"):
+        errors["model_path"] = "Select a GGUF language model."
     if model_path and "model_path" not in errors:
         try:
             registry_model = _find_registry_model_by_path(model_path, enabled_present_only=False)
-            if _as01((registry_model or {}).get("is_projector")):
+            if _as01((registry_model or {}).get("is_s2t")):
+                errors["model_path"] = "Speech-to-Text models must be started from the Speech-to-Text tab."
+            elif _as01((registry_model or {}).get("is_projector")):
                 errors["model_path"] = "MMPROJ files cannot be launched as models."
             else:
                 configured_mmproj_path = (registry_model or {}).get("mmproj_path")
@@ -1615,6 +1605,7 @@ def model_status():
         return jsonify({
             "status": "running",
             "current_model": name,
+            "current_model_key": _registry_path_key(current_main_model_used),
             "settings": current_main_model_settings,
             "runtime": current_main_model_runtime,
             "title_generation": title_generation,
@@ -1716,37 +1707,6 @@ def _to_float_or_none(value):
 def _to_float_or_zero(value) -> float:
     parsed = _to_float_or_none(value)
     return 0.0 if parsed is None else float(parsed)
-
-
-def _extract_amd_gpu_indexes(raw_text: str):
-    text = _strip_ansi(raw_text)
-    indexes = set()
-
-    for line in text.splitlines():
-        match = ROCM_GPU_LINE_RE.match(line)
-        if match:
-            indexes.add(int(match.group(1)))
-
-    header_cols = None
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("="):
-            continue
-
-        lower = stripped.lower()
-        if lower.startswith("gpu") and ("temp" in lower or "power" in lower or "perf" in lower):
-            header_cols = [part.strip() for part in re.split(r"\s{2,}|\t+", stripped) if part.strip()]
-            continue
-
-        if not header_cols or not re.match(r"^(?:\d+\b|(?:gpu|card)\[\d+\])", stripped, re.IGNORECASE):
-            continue
-
-        first_col = re.split(r"\s{2,}|\t+", stripped)[0]
-        match = re.search(r"(\d+)", first_col)
-        if match:
-            indexes.add(int(match.group(1)))
-
-    return sorted(indexes)
 
 
 def _normalize_gpu_entry(
@@ -2515,6 +2475,7 @@ def registry_list_route():
                 r["is_favorite"] = _as01(r.get("is_favorite"))
                 r["allow_benchmark"] = _as01(r.get("allow_benchmark"))
                 r["is_projector"] = _as01(r.get("is_projector"))
+                r["is_s2t"] = _as01(r.get("is_s2t"))
                 r["is_present"] = _as01(r.get("is_present"))
                 for field in MODEL_PROFILE_FIELDS:
                     r[field] = _as01(r.get(field))
@@ -2547,7 +2508,7 @@ def registry_toggle_route():
     field = (data.get("field") or "").strip()
     value = data.get("value")
 
-    allowed = {"is_enabled", "is_favorite", "allow_benchmark", "is_projector"}
+    allowed = {"is_enabled", "is_favorite", "allow_benchmark", "is_projector", "is_s2t"}
     if field not in allowed:
         return jsonify({"status": "error", "message": "Invalid field"}), 400
 
@@ -2579,12 +2540,24 @@ def registry_toggle_route():
                 f"""
                 UPDATE llm_benchmark_models
                    SET is_projector=1,
+                       is_s2t=0,
                        is_enabled=0,
                        allow_benchmark=0
                  WHERE {row_selector}
                 """,
                 (row_identifier,),
             )
+        elif field == "is_s2t" and value == 1:
+            cur.execute(
+                f"UPDATE llm_benchmark_models SET is_s2t=1, is_projector=0, allow_benchmark=0 WHERE {row_selector}",
+                (row_identifier,),
+            )
+        elif field == "allow_benchmark" and value == 1:
+            cur.execute(f"SELECT is_s2t, model_path FROM llm_benchmark_models WHERE {row_selector}", (row_identifier,))
+            candidate = cur.fetchone()
+            if candidate and (_as01(candidate[0]) or not str(candidate[1]).lower().endswith(".gguf")):
+                return jsonify({"status": "error", "message": "Only language models can be benchmarked."}), 400
+            cur.execute(f"UPDATE llm_benchmark_models SET allow_benchmark=1 WHERE {row_selector} AND is_projector=0", (row_identifier,))
         elif guarded_enable:
             cur.execute(
                 f"UPDATE llm_benchmark_models SET {field}=1 WHERE {row_selector} AND is_projector=0",
@@ -2614,7 +2587,7 @@ def registry_toggle_route():
 
         conn.commit()
 
-        if (field == "is_enabled" and value == 0) or (field == "is_projector" and value == 1):
+        if (field == "is_enabled" and value == 0) or (field in {"is_projector", "is_s2t"} and value == 1):
             _get_title_model_selection(clear_invalid=True)
 
         return jsonify({"status": "success", "field": field, "value": value})
@@ -2816,12 +2789,12 @@ def registry_dropdown_route():
             try:
                 cur.execute("""
                     SELECT
-                        id, model_name, model_path, file_size, is_favorite,
+                        id, model_name, friendly_name, model_path, file_size, is_favorite,
                         notes, profile_general, profile_coding, profile_writing,
                         profile_reasoning, profile_math, profile_agents, profile_images,
                         mmproj_path
                     FROM llm_benchmark_models
-                    WHERE is_enabled=1 AND is_present=1 AND is_projector=0
+                    WHERE is_enabled=1 AND is_present=1 AND is_projector=0 AND is_s2t=0 AND LOWER(model_path) LIKE '%.gguf'
                     ORDER BY is_favorite DESC, model_name ASC
                 """)
                 return cur.fetchall() or []
@@ -2874,6 +2847,8 @@ def registry_dropdown_route():
             models.append({
                 "name": name,
                 "value": path,
+                "path_key": _registry_path_key(path),
+                "friendly_name": str(r.get("friendly_name") or "").strip(),
                 "size_gb": round(size_gb, 2),
                 "max_tps": _lookup_chat_max_tps(name, path, tps_maps),
                 "is_favorite": is_favorite,
@@ -2887,6 +2862,7 @@ def registry_dropdown_route():
         return jsonify({
             "status": "success",
             "models": models,
+            "show_friendly_names": get_setting("llm.model_picker.show_friendly_names", default=False, cast=bool),
         })
     except Exception as exc:
         print(f"[ERROR] Managed model dropdown failed: {exc}")

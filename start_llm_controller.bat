@@ -6,7 +6,7 @@ title LLM Controller CE
 cd /d "%~dp0"
 
 echo ==================================================
-echo   LLM Controller CE v1.3
+echo   LLM Controller CE v1.4
 echo ==================================================
 echo.
 echo Starting the application from:

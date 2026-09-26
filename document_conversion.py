@@ -263,11 +263,6 @@ class ConvertedDocument:
     page_count: int | None
 
 
-def is_supported_document_name(filename: str) -> bool:
-    """Return whether a filename has a CE-supported Docling extension."""
-    return _document_extension(filename) in DOCUMENT_FORMATS
-
-
 def get_docling_artifacts_path() -> Path:
     """Return the deterministic CE-local location for Docling PDF artifacts."""
     return DOCLING_ARTIFACTS_PATH

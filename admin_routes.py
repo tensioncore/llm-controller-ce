@@ -121,7 +121,11 @@ def add_user():
         return redirect(url_for('admin.admin_users'))
 
     settings = get_password_settings()
-    temp_pw = generate_temp_password(settings)
+    try:
+        temp_pw = generate_temp_password(settings)
+    except ValueError as exc:
+        flash(str(exc), "error")
+        return redirect(url_for('admin.admin_users'))
     pw_hash = generate_password_hash(temp_pw).decode('utf-8')
 
     try:

@@ -28,7 +28,7 @@ USE `llmcontroller`;
 --
 
 INSERT IGNORE INTO `llm_app_settings` (`key`, `value`, `value_type`, `description`, `updated_by_user_id`, `updated_at`) VALUES
-('app.version', 'LLM Controller CE v1.3', 'string', 'Displayed software version', NULL, '2026-03-16 07:21:16'),
+('app.version', 'LLM Controller CE v1.4', 'string', 'Displayed software version', NULL, '2026-03-16 07:21:16'),
 ('auth.email_confirm_token_ttl_minutes', '1440', 'int', 'Email confirmation token lifetime in minutes', NULL, '2026-05-05 00:00:00'),
 ('auth.email_token_request_cooldown_seconds', '60', 'int', 'Cooldown for auth email token requests', NULL, '2026-05-05 00:00:00'),
 ('auth.public_base_url', '', 'string', 'Public base URL for auth email links', NULL, '2026-05-05 00:00:00'),
@@ -59,8 +59,11 @@ INSERT IGNORE INTO `llm_app_settings` (`key`, `value`, `value_type`, `descriptio
 ('llm.defaults.top_k', '30', 'int', 'Default top_k', 1, '2026-03-16 01:35:40'),
 ('llm.defaults.top_p', '0.85', 'float', 'Default top_p', 1, '2026-03-16 01:35:40'),
 ('llm.llama_server_path', 'llama-server/llama-server.exe', 'string', 'Path to llama-server executable', NULL, '2025-12-30 06:59:33'),
-('llm.scan_directory', 'LLMs', 'string', 'Base folder to scan for GGUF models', 1, '2026-03-16 01:35:40'),
+('llm.scan_directory', 'LLMs', 'string', 'Base folder to scan for GGUF models and local NeMo checkpoints', 1, '2026-03-16 01:35:40'),
 ('llm.title_model_path', '', 'string', 'Optional enabled managed model used for title generation; blank uses the main model', NULL, '2026-08-10 00:00:00'),
+('speech.s2t.runtime_path', '', 'string', 'Python interpreter in the operator-installed speech environment', NULL, CURRENT_TIMESTAMP),
+('speech.s2t.port', '8082', 'int', 'Private loopback speech service port', NULL, CURRENT_TIMESTAMP),
+('speech.s2t.model_path', '', 'string', 'Selected managed Speech-to-Text model', NULL, CURRENT_TIMESTAMP),
 ('security.password_policy.level', 'strong', 'string', 'Password policy level: basic/moderate/strong/custom', NULL, '2025-12-30 06:59:33'),
 ('security.password_policy.min_length', '12', 'int', 'Minimum password length', NULL, '2025-12-30 06:59:33'),
 ('security.password_policy.require_digit', '1', 'bool', 'Require digit', NULL, '2025-12-30 06:59:33'),
