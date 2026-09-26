@@ -19,6 +19,8 @@
   <a href="docs/README.md">Documentation</a>
 </p>
 
+![The LLM Controller CE chat workspace](docs/images/hero-screenshot.png)
+
 ## A workspace for your work.
 
 Bring your writing, code, documents, and ideas into the conversation. Keep related chats together in Projects, add instructions for the work at hand, and pick up where you left off.
