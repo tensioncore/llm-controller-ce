@@ -1,5 +1,6 @@
 ﻿from flask import Blueprint, request, jsonify, session, g
 from flask import current_app
+from gevent import spawn
 from forms import RenameSessionForm
 import sqlite3
 import requests
@@ -11,6 +12,7 @@ import uuid
 import os
 import re
 import model_routes
+import memory_service
 from attachment_utils import (
     ATTACHMENT_ENVELOPE_MAX_FILES,
     decode_image_data_url,
@@ -337,7 +339,7 @@ def auto_generate_chat_title(user_id: int, session_id: str):
         c = conn.cursor()
 
         c.execute("""
-            SELECT bot_response
+            SELECT user_message, bot_response
               FROM chats
              WHERE user_id=?
                AND session_id=?
@@ -349,7 +351,8 @@ def auto_generate_chat_title(user_id: int, session_id: str):
         if not row:
             return
 
-        first_response = (row[0] or "").strip()
+        first_request = (row[0] or "").strip()
+        first_response = (row[1] or "").strip()
         if not first_response:
             return
 
@@ -361,10 +364,29 @@ def auto_generate_chat_title(user_id: int, session_id: str):
             return
 
         title_prompt = (
-            "Generate a short, concise title for this chat interaction. "
-            "Do not provide any labels or punctuation like quote marks, "
-            "just respond with the title:\n\n"
-            + first_response[:800]
+            "Create a short navigation title for this chat based on the user's request.\n"
+            "Compress the request into its main topic or task. Do not repeat the request.\n\n"
+            "Rules:\n"
+            "- Use 3 to 6 words\n"
+            "- Aim for about 4 words\n"
+            "- Use a short topic or task phrase, not a full sentence\n"
+            "- Keep only details needed to identify the chat\n"
+            "- Ignore greetings, names, thanks, and small talk unless a name is the actual topic\n"
+            "- Do not copy long phrases from the request\n"
+            "- Do not mention the user, assistant, AI, ChatGPT, or model\n"
+            "- No labels, quotation marks, or ending punctuation\n"
+            "- Output only the title\n\n"
+            "Examples:\n"
+            "Request: Where is Ginninderra located?\n"
+            "Title: Ginninderra Location\n\n"
+            "Request: Help me build a Python app that calculates one million digits of pi.\n"
+            "Title: Python Pi Calculator\n\n"
+            "Request: How do I enable SSH for my server?\n"
+            "Title: Enable SSH Server\n\n"
+            "Request: Design a complete GPU accelerated inference platform with model orchestration, request routing, and performance optimization.\n"
+            "Title: GPU Inference Platform\n\n"
+            "Request:\n"
+            + first_request[:800]
         )
 
         def call_title(completion_url, retries=6, delay=0.5, timeout=30):
@@ -376,7 +398,7 @@ def auto_generate_chat_title(user_id: int, session_id: str):
                             "model": "llama",
                             "messages": [{"role": "user", "content": title_prompt}],
                             "stream": False,
-                            "max_tokens": 250,
+                            "max_tokens": 240,
                             "temperature": 0.4,
                             "top_p": 0.9
                         },
@@ -700,15 +722,21 @@ def _generation_auth_still_valid(state):
     return False
 
 
-def _history_rows_to_messages(history_rows):
+def _history_rows_to_messages(history_rows, include_images=True):
     messages = []
     for row in history_rows:
         attachment_context = row[2] if len(row) > 2 else None
         if row[0] or attachment_context:
-            messages.append({
-                "role": "user",
-                "content": _compose_model_user_content(row[0], attachment_context),
-            })
+            content = _compose_model_user_content(
+                row[0],
+                attachment_context,
+                include_images=include_images,
+            )
+            if content or row[0]:
+                messages.append({
+                    "role": "user",
+                    "content": content,
+                })
         if row[1]:
             messages.append({"role": "assistant", "content": row[1]})
     return messages
@@ -808,7 +836,7 @@ def _compose_legacy_user_message(user_message, attachment_context=None):
     return composed[:MAX_MODEL_CONTEXT_CHARS]
 
 
-def _compose_model_user_content(user_message, attachment_context=None):
+def _compose_model_user_content(user_message, attachment_context=None, include_images=True):
     base_message = (user_message or "").strip()
     if not attachment_context:
         return base_message
@@ -829,14 +857,17 @@ def _compose_model_user_content(user_message, attachment_context=None):
     )
     text_blocks = _build_attachment_text_blocks(attachments, text_budget)
     has_images = any(item.get("kind") == "image" for item in attachments)
+    omitted_images = has_images and not include_images
 
-    if not has_images:
+    if not has_images or omitted_images:
         attachment_text = "\n\n".join(
             text_blocks[index]
             for index in range(1, len(attachments) + 1)
             if index in text_blocks
         )
         if not attachment_text:
+            if omitted_images:
+                return base_message
             attachment_text = MODEL_CONTEXT_TRUNCATION_NOTICE
         return _compose_user_message(base_message, attachment_text)
 
@@ -857,16 +888,25 @@ def _compose_model_user_content(user_message, attachment_context=None):
     return content
 
 
+def _attachment_context_has_images(attachment_context):
+    if not attachment_context:
+        return False
+    attachments = _parse_stored_attachment_context(attachment_context)["attachments"]
+    return any(item.get("kind") == "image" for item in attachments)
+
+
 def _build_limited_model_context(
     user_id,
     session_id,
     history_rows,
     user_message,
     attachment_context=None,
+    memory_scope=None,
 ):
     _refresh_attachment_limits()
     system_instructions = get_user_system_instructions(user_id)
     project_instructions = get_session_project_instructions(user_id, session_id)
+    recalled_memory = memory_service.recall(memory_scope, user_message)
     # Strict chat templates allow a system message only at index zero.
     instruction_content = "\n\n".join(
         instructions
@@ -904,6 +944,10 @@ def _build_limited_model_context(
         ATTACHMENT_STORAGE_MAX_TOTAL_BYTES,
         max(MAX_ATTACHMENT_TOTAL_BYTES, current_image_bytes),
     )
+    runtime_supports_images = bool(
+        (getattr(model_routes, "current_main_model_runtime", None) or {}).get("supports_images")
+    )
+    include_history_images = runtime_supports_images or current_image_count > 0
 
     bounded_prior_rows = []
     aggregate_image_count = current_image_count
@@ -913,20 +957,21 @@ def _build_limited_model_context(
             parsed = _parse_stored_attachment_context(row[2] if len(row) > 2 else None)
         except ValueError:
             break
-        row_images = [
-            item for item in parsed["attachments"]
-            if item.get("kind") == "image"
-        ]
-        row_image_count = len(row_images)
-        row_image_bytes = sum(int(item.get("size") or 0) for item in row_images)
-        if any(int(item.get("size") or 0) > max_request_image_bytes for item in row_images):
-            break
-        if aggregate_image_count + row_image_count > max_request_images:
-            break
-        if aggregate_image_bytes + row_image_bytes > max_request_total_image_bytes:
-            break
-        aggregate_image_count += row_image_count
-        aggregate_image_bytes += row_image_bytes
+        if include_history_images:
+            row_images = [
+                item for item in parsed["attachments"]
+                if item.get("kind") == "image"
+            ]
+            row_image_count = len(row_images)
+            row_image_bytes = sum(int(item.get("size") or 0) for item in row_images)
+            if any(int(item.get("size") or 0) > max_request_image_bytes for item in row_images):
+                break
+            if aggregate_image_count + row_image_count > max_request_images:
+                break
+            if aggregate_image_bytes + row_image_bytes > max_request_total_image_bytes:
+                break
+            aggregate_image_count += row_image_count
+            aggregate_image_bytes += row_image_bytes
         bounded_prior_rows.append(row)
     prior_rows = list(reversed(bounded_prior_rows))
 
@@ -935,15 +980,19 @@ def _build_limited_model_context(
             messages = []
             if instruction_content:
                 messages.append({"role": "system", "content": instruction_content})
-            messages.extend(_history_rows_to_messages(prior_rows))
+            messages.extend(_history_rows_to_messages(
+                prior_rows,
+                include_images=include_history_images,
+            ))
             messages.append(current_message)
-            return normalize_openai_messages(
+            normalized = normalize_openai_messages(
                 messages,
                 max_total_chars=MAX_MODEL_CONTEXT_CHARS,
                 max_image_bytes=max_request_image_bytes,
                 max_images=max_request_images,
                 max_total_image_bytes=max_request_total_image_bytes,
             )
+            return memory_service.insert_recall(normalized, recalled_memory, MAX_MODEL_CONTEXT_CHARS)
         except ValueError as exc:
             if not prior_rows:
                 raise ValueError(
@@ -1360,6 +1409,21 @@ def _persist_chat_turn(
         conn.close()
 
 
+def _finish_chat_background(user_id, session_id, first_user_message, memory_scope,
+                            user_message, final_answer, metadata, main_process, edit_memory_namespace):
+    # Sequence this turn's title before capture after the final response is emitted.
+    if first_user_message:
+        auto_generate_chat_title(user_id, session_id)
+    capture_allowed = main_process is model_routes.main_process and not _is_benchmark_running()
+    editing = metadata.get("action") == "edit_prompt"
+    if not capture_allowed and not editing:
+        return
+    memory_service.capture(
+        memory_scope if capture_allowed else None, user_message, final_answer, metadata,
+        edited_namespace=edit_memory_namespace,
+    )
+
+
 def _stream_chat_reply(
     user_id,
     session_id,
@@ -1371,6 +1435,8 @@ def _stream_chat_reply(
     replace_prompt_id=None,
     edit_prompt_id=None,
     attachment_context=None,
+    memory_scope=None,
+    edit_memory_namespace=None,
 ):
     action = "edit_prompt" if edit_prompt_id else ("regenerate" if replace_prompt_id else "send")
     stream_event_extra = {"action": action}
@@ -1382,7 +1448,7 @@ def _stream_chat_reply(
     preserve_failed_turn = bool(
         replace_prompt_id or edit_prompt_id or has_images or has_attachment_context
     )
-    if has_images and not bool(
+    if _attachment_context_has_images(attachment_context) and not bool(
         (getattr(model_routes, "current_main_model_runtime", None) or {}).get("supports_images")
     ):
         _emit_chat_error(
@@ -1439,12 +1505,17 @@ def _stream_chat_reply(
         "regenerate": "socket:regenerate_message",
     }[action]
     active_model = os.path.basename(str(model_routes.current_main_model_used or "")) or None
+    generation_main_process = model_routes.main_process
 
     try:
         buffer = ""
         reasoning = ""
         final_answer = ""
-        in_thoughts = False
+        # Snapshot the model option for this generation; never inject a virtual tag.
+        initially_open_thoughts = bool(
+            (model_routes.current_main_model_runtime or {}).get("starts_in_thinking_mode", False)
+        )
+        in_thoughts = initially_open_thoughts
 
         tokens_count = 0
         prompt_tokens_count = 0
@@ -1455,6 +1526,7 @@ def _stream_chat_reply(
         start_time = time.time()
         stream_error = None
         stream_completed = False
+        memory_token_truncated = False
         response = None
 
         payload = {"model": "llama", "messages": messages, "stream": True}
@@ -1594,7 +1666,12 @@ def _stream_chat_reply(
                 except json.JSONDecodeError:
                     continue
 
-                delta = chunk_json.get("choices", [{}])[0].get("delta", {})
+                choice = chunk_json.get("choices", [{}])[0]
+                # OpenAI-compatible output-limit completion is displayable, but
+                # its incomplete answer must not become conversational Memory.
+                if choice.get("finish_reason") == "length":
+                    memory_token_truncated = True
+                delta = choice.get("delta", {})
                 delta_text = delta.get("content")
                 delta_reasoning = delta.get("reasoning_content")
 
@@ -1626,7 +1703,9 @@ def _stream_chat_reply(
 
                     while buffer:
                         delimiter = "</think>" if in_thoughts else "<think>"
-                        delimiter_match = re.search(delimiter, buffer, re.IGNORECASE | re.ASCII)
+                        # An explicit opener in the initially-open block is redundant.
+                        delimiters = ("</think>", "<think>") if initially_open_thoughts else (delimiter,)
+                        delimiter_match = re.search("|".join(delimiters), buffer, re.IGNORECASE | re.ASCII)
                         if delimiter_match:
                             text = buffer[:delimiter_match.start()]
                             buffer = buffer[delimiter_match.end():]
@@ -1634,8 +1713,8 @@ def _stream_chat_reply(
                             # Retain only a possible delimiter prefix across deltas.
                             lowered_buffer = buffer.lower()
                             pending_length = 0
-                            for length in range(min(len(buffer), len(delimiter) - 1), 0, -1):
-                                if delimiter.startswith(lowered_buffer[-length:]):
+                            for length in range(min(len(buffer), max(map(len, delimiters)) - 1), 0, -1):
+                                if any(tag.startswith(lowered_buffer[-length:]) for tag in delimiters):
                                     pending_length = length
                                     break
                             text = buffer[:-pending_length] if pending_length else buffer
@@ -1650,7 +1729,10 @@ def _stream_chat_reply(
 
                         if delimiter_match is None:
                             break
+                        if initially_open_thoughts and delimiter_match.group().lower() == "<think>":
+                            continue
                         if in_thoughts:
+                            initially_open_thoughts = False
                             if prompt_end_time is None:
                                 prompt_end_time = time.time()
                             in_thoughts = False
@@ -1744,8 +1826,8 @@ def _stream_chat_reply(
         if tokens_count == 0 and not state["stop_requested"]:
             request_event_status = "empty_response"
             error_message = (
-                "Error: your input exceeded the model's context window. "
-                "Please shorten your prompt or trim previous messages."
+                "Error: the model returned an empty response. "
+                "Please try again. If this continues, check the model runtime logs."
             )
             if preserve_failed_turn:
                 _emit_chat_error(
@@ -1841,12 +1923,33 @@ def _stream_chat_reply(
         )
 
         request_event_status = "stopped" if state["stop_requested"] else "completed"
-        if first_user_message:
-            threading.Thread(
-                target=auto_generate_chat_title,
-                args=(user_id, session_id),
-                daemon=True
-            ).start()
+        capture_scope = (
+            memory_scope
+            if request_event_status == "completed" and not memory_token_truncated
+            else None
+        )
+        # A saved user edit reconciles old facts even when replacement capture is
+        # disabled or token-limited. Failed/stopped/unsaved edits never reach it.
+        reconcile_edit = action == "edit_prompt" and request_event_status == "completed"
+        if first_user_message or capture_scope is not None or reconcile_edit:
+            try:
+                if capture_scope is None and not reconcile_edit:
+                    threading.Thread(
+                        target=auto_generate_chat_title,
+                        args=(user_id, session_id), daemon=True,
+                    ).start()
+                else:
+                    args = (user_id, session_id, first_user_message, capture_scope,
+                            user_message, final_answer.strip(), {
+                                "session_id": session_id,
+                                "prompt_id": message_id,
+                                "action": action,
+                                "source_prompt_id": replace_prompt_id or edit_prompt_id or "",
+                                "model": active_model or "",
+                            }, generation_main_process, edit_memory_namespace)
+                    spawn(_finish_chat_background, *args)
+            except Exception as exc:
+                current_app.logger.warning("Post-completion work could not start (%s).", type(exc).__name__)
     finally:
         if request_event_started_at is not None:
             record_request_event(
@@ -2052,6 +2155,8 @@ def handle_message(data):
         )
         return
 
+    memory_scope = memory_service.resolve_scope(user_id, session_id)
+    edit_memory_namespace = memory_service.resolve_edit_namespace(user_id, session_id) if edit_prompt_id else None
     try:
         messages = _build_limited_model_context(
             user_id,
@@ -2059,6 +2164,7 @@ def handle_message(data):
             history_rows,
             user_message,
             current_attachment_context,
+            memory_scope=memory_scope,
         )
     except (
         ValueError,
@@ -2084,6 +2190,8 @@ def handle_message(data):
         session_row[0],
         edit_prompt_id=edit_prompt_id,
         attachment_context=current_attachment_context,
+        memory_scope=memory_scope,
+        edit_memory_namespace=edit_memory_namespace,
     )
 
 
@@ -2165,6 +2273,7 @@ def handle_regenerate_message(data):
 
     user_message = (target_row[3] or "").strip()
     attachment_context = target_row[7]
+    memory_scope = memory_service.resolve_scope(user_id, session_id)
     try:
         messages = _build_limited_model_context(
             user_id,
@@ -2172,6 +2281,7 @@ def handle_regenerate_message(data):
             history_rows,
             user_message,
             attachment_context,
+            memory_scope=memory_scope,
         )
     except (
         ValueError,
@@ -2197,6 +2307,7 @@ def handle_regenerate_message(data):
         target_row[0],
         replace_prompt_id=source_prompt_id,
         attachment_context=attachment_context,
+        memory_scope=memory_scope,
     )
 
 

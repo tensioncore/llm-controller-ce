@@ -168,6 +168,10 @@ def _configure_normal_mode(app: Flask):
 
         return render_chat_shell()
 
+    from memory_service import schedule_initialization
+
+    schedule_initialization()
+
 
 def _request_wants_json():
     path = request.path or ""

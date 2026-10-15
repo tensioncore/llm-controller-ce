@@ -13,6 +13,7 @@
     <script src="/static/socket.io.js"></script>
 
     <script src="/static/_http.js" defer></script>
+    <script src="/static/_dialogs.js" defer></script>
     <script src="/static/_utils.js" defer></script>
     <script src="/static/model_module.js" defer></script>
     <script src="/static/speech.js" defer></script>
@@ -53,7 +54,7 @@
             </div>
             <ul id="projectList" aria-label="Project filters"></ul>
         </section>
-        <div id="chatHistoryContext" class="chat-history-context">All Chats</div>
+        <div id="chatHistoryContext" class="chat-history-context">Chats</div>
         <div class="chat-history-search">
             <input id="chatHistorySearch" type="search" autocomplete="off" placeholder="Search chats" aria-label="Search chats">
         </div>
@@ -327,6 +328,10 @@
     <div id="analyticsDrawer" class="drawer">
         <div class="drawer-header">
             📊 Analytics
+            <button id="analyticsRefreshButton" class="analytics-refresh-btn" type="button">
+                <span class="analytics-refresh-icon" aria-hidden="true">↻</span>
+                Refresh
+            </button>
             <button class="drawer-close-btn" onclick="closeAllDrawers()">✖</button>
         </div>
         {% if session.get('role') == 'admin' %}
@@ -469,6 +474,13 @@
             </div>
 
         <div class="bench-controls-row">
+            <label class="bench-suite-select">Suite
+                <select id="benchSuiteSelect" aria-describedby="benchSuiteDescription"><option value="">Loading suites...</option></select>
+            </label>
+            <label class="bench-suite-select">Profile
+                <select id="benchProfileSelect"><option value="Default v1">Default v1</option></select>
+            </label>
+            <button id="benchManageBtn" type="button">Manage Suites</button>
             <label class="bench-force-control">
                 <input type="checkbox" id="benchForceCheckbox">
                 Force re-run
@@ -484,6 +496,7 @@
           </div>
         </div>
 
+        <div id="benchSuiteDescription" class="bench-suite-description"></div>
         <div class="bench-progress-panel">
             <div class="bench-progress-labels">
                 <div id="benchModel">Model: —</div>
@@ -497,30 +510,42 @@
         </div>
         </section>
 
-        <details class="collapsible-section bench-prompt-disclosure">
-          <summary>
-            <span>CE Benchmark Questions</span>
-            <span class="bench-prompt-count">5 prompts</span>
-          </summary>
-        <div class="bench-prompt-editor">
-            <div class="bench-prompt-editor-head">
-                <div>
-                    <h3>Edit Questions</h3>
-                    <div class="bench-prompt-editor-subtitle">These 5 prompts are used for benchmark runs. Defaults test practical reasoning, troubleshooting, explanation quality, planning, and uncertainty handling.</div>
+        <details id="benchSuiteManager" class="collapsible-section bench-prompt-disclosure">
+          <summary><span>Manage Suites</span><span>Saved revisions preserve history</span></summary>
+          <div class="bench-prompt-editor">
+            <fieldset id="benchSuiteManagement">
+              <div class="bench-suite-toolbar">
+                <label>Suite revision <select id="benchManageSuite"></select></label>
+                <button id="benchSuiteNew" type="button">New Suite</button>
+                <button id="benchSuiteEdit" type="button">View / Edit</button>
+                <button id="benchSuiteDuplicate" type="button">Duplicate</button>
+                <button id="benchSuiteArchive" type="button" class="bench-archive-btn">Archive</button>
+              </div>
+              <div id="benchSuiteEditorStatus" class="bench-prompt-editor-status" role="status"></div>
+              <div id="benchSuiteEditPanel" hidden>
+                <fieldset id="benchSuiteFields">
+                  <label>Name <input id="benchSuiteName" maxlength="120" type="text"></label>
+                  <label>Description <textarea id="benchSuiteDescriptionInput" rows="2"></textarea></label>
+                  <div id="benchSuitePromptList" class="bench-suite-prompts"></div>
+                  <button id="benchSuiteAddPrompt" type="button">Add Prompt</button>
+                </fieldset>
+                <div class="bench-suite-toolbar">
+                  <button id="benchSuiteSave" type="button" class="bench-prompts-save-btn">Save New Revision</button>
+                  <button id="benchSuiteCancel" type="button">Close Editor</button>
                 </div>
-                <button id="benchPromptsSaveBtn" type="button" class="bench-prompts-save-btn">Save Questions</button>
-            </div>
-            <div id="benchPromptEditorStatus" class="bench-prompt-editor-status"></div>
-            <div id="benchPromptEditorList" class="bench-prompt-editor-list">
-                <div class="bench-prompt-editor-empty">Loading benchmark questions...</div>
-            </div>
-        </div>
+              </div>
+            </fieldset>
+          </div>
         </details>
 
         <section class="bench-results-section" aria-labelledby="benchResultsTitle">
         <div class="bench-section-header">
             <h3 id="benchResultsTitle">Best run per model</h3>
             <span id="benchResultsCount" class="bench-results-count">Loading...</span>
+        </div>
+        <div class="bench-suite-toolbar">
+          <label>Results for revision <select id="benchHistoryRevision"></select></label>
+          <span class="bench-suite-description">Run status describes execution; completion is reported separately.</span>
         </div>
         <div class="table-wrap bench-table-wrap" role="region" aria-label="Best benchmark run per model" tabindex="0">
             <table id="benchBestTable" class="u-full-width">
@@ -542,7 +567,7 @@
                         <th>Status</th>
                         <th>Model</th>
                         <th>Size (GB)</th>
-                        <th>Avg TPS</th>
+                        <th title="Backend generation speed; legacy request throughput is available in details">Gen TPS</th>
                         <th>Min/Max TPS</th>
                         <th>Tokens</th>
                         <th>Total</th>
@@ -555,6 +580,11 @@
                 </tbody>
             </table>
         </div>
+        <details id="benchHistoryDisclosure" class="collapsible-section bench-history-disclosure">
+          <summary><span>Model run history</span><span>Includes previous attempts</span></summary>
+          <div id="benchRunHistory" class="bench-history-list"></div>
+          <button id="benchHistoryMore" type="button" hidden>Load Older Runs</button>
+        </details>
         </section>
 
       </div>
@@ -562,7 +592,10 @@
         <div class="bench-detail-header">
             <div class="bench-detail-toolbar">
                 <button id="benchBackToResultsBtn" type="button" class="bench-back-btn">Back to Results</button>
-                <h3 id="benchDetailsTitle">Selected run details</h3>
+                <h3 id="benchDetailsTitle">Selected model run</h3>
+                <button id="benchCopyRun" type="button">Copy Model Run</button>
+                <button id="benchExportRunJson" type="button">JSON</button>
+                <button id="benchExportRunCsv" type="button">CSV</button>
             </div>
             <nav id="benchDetailNav" class="bench-detail-nav" aria-label="Selected run navigation" hidden></nav>
         </div>
@@ -712,6 +745,11 @@
             <div class="form-row">
               <label for="modelPickerShowFriendlyNames">Show friendly names in Model picker</label>
               <input type="checkbox" id="modelPickerShowFriendlyNames" style="width:auto;">
+            </div>
+            <div class="form-row">
+              <label for="memoryEnabled">Enable conversational Memory</label>
+              <input type="checkbox" id="memoryEnabled" style="width:auto;"
+                     title="Recall and save personal or Project memories. Requires local Memory artifacts; see docs/MEMORY.md.">
             </div>
             <div class="form-row">
               <label for="scanDirectoryInput">Models DIR:</label>
@@ -930,11 +968,32 @@
         <button type="button" class="user-close-btn" data-project-modal-close="editor" aria-label="Close Project editor" title="Close">&times;</button>
         <h3 id="projectEditorTitle">Create Project</h3>
         <form id="projectEditorForm">
-            <input id="projectEditorId" type="hidden">
             <label for="projectNameInput">Name</label>
             <input id="projectNameInput" type="text" maxlength="100" required autocomplete="off">
+            <fieldset id="projectEditorFields">
+            <div class="drawer-tabs" role="tablist" aria-label="Project settings">
+                <button id="projectInstructionsTab" class="drawer-tab active" type="button" role="tab" aria-selected="true" aria-controls="projectInstructionsPanel" tabindex="0">Instructions</button>
+                <button id="projectMemoryTab" class="drawer-tab" type="button" role="tab" aria-selected="false" aria-controls="projectMemoryPanel" tabindex="-1">Memory</button>
+            </div>
+            <section id="projectInstructionsPanel" role="tabpanel" aria-labelledby="projectInstructionsTab">
             <label for="projectInstructionsInput">Project Instructions</label>
             <textarea id="projectInstructionsInput" rows="6" maxlength="20000" placeholder="Optional instructions for this Project"></textarea>
+            </section>
+            <section id="projectMemoryPanel" role="tabpanel" aria-labelledby="projectMemoryTab" hidden>
+                <label for="projectMemoryMode">Memory mode</label>
+                <select id="projectMemoryMode">
+                    <option value="off">Off</option>
+                    <option value="project" selected>Project Memory only</option>
+                    <option value="personal_project">Personal + Project Memory</option>
+                </select>
+                <p class="muted-note">Personal recall also requires your Personal Memory setting. New memories from this Project stay in this Project. Changes apply to subsequent turns; turning Memory off does not erase saved memories.</p>
+                <div class="memory-browser-heading">
+                    <h4 id="projectMemoryHeading">Project Memory</h4>
+                    <button id="refreshProjectMemory" type="button" class="user-action-btn">Refresh</button>
+                </div>
+                <div id="projectMemoryBrowser" class="memory-browser" aria-live="polite"></div>
+            </section>
+            </fieldset>
             <div id="projectEditorError" class="project-modal-error" aria-live="polite"></div>
             <div class="project-modal-actions">
                 <button type="button" class="user-action-btn" data-project-modal-close="editor">Cancel</button>
@@ -969,6 +1028,7 @@
       <p class="muted-note account-email">{{ session.get('email', '') }}</p>
       <div class="drawer-tabs" role="tablist" aria-label="Account settings">
         <button id="accountInstructionsTab" class="drawer-tab active" type="button" role="tab" aria-selected="true" aria-controls="accountInstructionsPanel" tabindex="0">Instructions</button>
+        <button id="accountMemoryTab" class="drawer-tab" type="button" role="tab" aria-selected="false" aria-controls="accountMemoryPanel" tabindex="-1">Memory</button>
         <button id="accountEmailTab" class="drawer-tab" type="button" role="tab" aria-selected="false" aria-controls="accountEmailPanel" tabindex="-1">Email</button>
         <button id="accountPasswordTab" class="drawer-tab" type="button" role="tab" aria-selected="false" aria-controls="accountPasswordPanel" tabindex="-1">Password</button>
       </div>
@@ -985,6 +1045,22 @@
         <button type="submit" class="btn save-btn">Save System Instructions</button>
         <div id="system-instructions-alert" aria-live="polite"></div>
       </form>
+      </section>
+      <section id="accountMemoryPanel" class="analytics-tab-panel" role="tabpanel" aria-labelledby="accountMemoryTab" hidden>
+        <form id="personalMemoryForm">
+          <label class="memory-toggle" for="personalMemoryEnabled">
+            <input id="personalMemoryEnabled" type="checkbox" disabled> Enable Personal Memory
+          </label>
+          <p class="muted-note">Use and save Personal Memory in chats outside Projects. Allow Personal recall in Projects set to Personal + Project Memory. The Admin Memory switch must also be on.</p>
+          <p class="muted-note">Changes apply to subsequent turns. Turning this off keeps saved memories and does not disable Project Memory.</p>
+          <button id="savePersonalMemory" type="submit" class="btn save-btn" disabled>Save Memory preference</button>
+          <div id="personalMemoryAlert" aria-live="polite"></div>
+        </form>
+        <div class="memory-browser-heading">
+          <h4>Personal Memory</h4>
+          <button id="refreshPersonalMemory" type="button" class="user-action-btn">Refresh</button>
+        </div>
+        <div id="personalMemoryBrowser" class="memory-browser" aria-live="polite"></div>
       </section>
       <section id="accountEmailPanel" class="analytics-tab-panel" role="tabpanel" aria-labelledby="accountEmailTab" hidden>
       <form id="changeEmailForm">
@@ -1136,10 +1212,17 @@
             window.location.href = url;
             }
 
-            function adminDeleteUserChatsById(userId) {
-            if (!confirm("Delete ALL chats for user " + userId + "?")) return;
+            const pendingAdminChatDeletes = new Set();
+            let adminAllChatsDeletePending = false;
+            let chatHistoryClearPending = false;
 
-            fetch('/analytics/admin_delete_user_chats', {
+            async function adminDeleteUserChatsById(userId) {
+            if (pendingAdminChatDeletes.has(userId)) return;
+            if (!await showDecisionDialog({ title: "Delete user chats", actionLabel: "Delete Chats",
+                message: "Delete ALL chats for user " + userId + "?" })) return;
+
+            pendingAdminChatDeletes.add(userId);
+            return fetch('/analytics/admin_delete_user_chats', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-CSRFToken': window.CSRF_TOKEN },
                 body: JSON.stringify({ user_id: parseInt(userId, 10) }),
@@ -1155,13 +1238,17 @@
                 showCustomAlert("Delete failed: " + (data.message || "Unknown error"));
                 }
             })
-            .catch(e => showCustomAlert("Delete failed: " + e));
+            .catch(e => showCustomAlert("Delete failed: " + e))
+            .finally(() => pendingAdminChatDeletes.delete(userId));
         }
 
-        function adminDeleteAllChats() {
-        if (!confirm("Delete ALL chats for ALL users? This cannot be undone.")) return;
+        async function adminDeleteAllChats() {
+        if (adminAllChatsDeletePending) return;
+        if (!await showDecisionDialog({ title: "Delete all users' chats", actionLabel: "Delete ALL Chats",
+            message: "Delete ALL chats for ALL users? This cannot be undone." })) return;
 
-        fetch('/analytics/admin_delete_all_chats', {
+        adminAllChatsDeletePending = true;
+        return fetch('/analytics/admin_delete_all_chats', {
             method: 'POST',
             headers: { 'X-CSRFToken': window.CSRF_TOKEN },
             credentials: 'same-origin'
@@ -1178,7 +1265,8 @@
             showCustomAlert("Delete failed: " + (data.message || "Unknown error"));
             }
         })
-        .catch(e => showCustomAlert("Delete failed: " + e));
+        .catch(e => showCustomAlert("Delete failed: " + e))
+        .finally(() => { adminAllChatsDeletePending = false; });
         }
 
     function exportChatHistory() {
@@ -1232,9 +1320,12 @@
             .catch(e => showCustomAlert("Import error: " + e));
         }
 
-        function clearChatHistory() {
-            if (!confirm("Are you sure you want to clear all chat history? This cannot be undone.")) return;
-            fetch('/analytics/delete_all_chats', {
+        async function clearChatHistory() {
+            if (chatHistoryClearPending) return;
+            if (!await showDecisionDialog({ title: "Clear Chat History", actionLabel: "Clear Chat History",
+                message: "Are you sure you want to clear all chat history? This cannot be undone." })) return;
+            chatHistoryClearPending = true;
+            return fetch('/analytics/delete_all_chats', {
                 method: "POST",
                 headers: {
                 'X-CSRFToken': window.CSRF_TOKEN
@@ -1252,7 +1343,7 @@
                 })
                 .catch(err => {
                 showCustomAlert("Error clearing chat history: " + err.message);
-                });
+                }).finally(() => { chatHistoryClearPending = false; });
             }
             document.addEventListener('keydown', function(e) {
             if (e.key === "Escape") {

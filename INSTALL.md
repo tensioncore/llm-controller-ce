@@ -2,13 +2,13 @@
 
 [← Product overview](README.md) · [Documentation](docs/README.md) · [Optional local voice](VOICE_INSTALL.md)
 
-CE uses a first-run web installer. This guide covers the existing installation contract: an ordered Ubuntu/Linux setup, Windows runtime notes, local document preparation, and manual upgrades.
+CE uses a first-run web installer. This guide covers the existing installation contract: an ordered Ubuntu/Linux setup, a complete Windows installation guide, local document preparation, and manual upgrades.
 
-**Installing a new instance?** Start with [Requirements](#requirements), then follow [Ubuntu/Linux](#ubuntulinux-fresh-install) or the [Windows notes](#windows-default-runtime-layout). **Updating an existing instance?** Use [Existing installation upgrades](#existing-installation-upgrades), not the clean-install database files.
+**Installing a new instance?** Start with [Requirements](#requirements), then follow [Ubuntu/Linux](#ubuntulinux-fresh-install) or the [Windows installation guide](WINDOWS_INSTALL.md). **Updating an existing instance?** Use [Existing installation upgrades](#existing-installation-upgrades), not the clean-install database files.
 
 ## Requirements
 
-The CE v1.4 reference targets are **Python 3.11.7** and **MySQL 8.0.22**. These identify the project's validated baseline, not a requirement to replace a working host with those exact historical patch versions. Use a compatible application environment and validate it on the intended host.
+The CE v1.4 reference targets are **Python 3.11.7** and **MySQL 8.0.22**. These identify the project's validated baseline, not a requirement to replace a working host with those exact historical patch versions. The current dependency set requires **Python 3.11 or newer** (the pinned ONNX Runtime requires 3.11); Python 3.11 is the validated choice. The [Windows guide](WINDOWS_INSTALL.md) records the separate L03 reference with MySQL 8.0.46. Newer Python versions need validation on the intended host.
 
 You need Python, MySQL, a writable application folder, local GGUF models, and a working `llama-server` runtime compatible with the host operating system and hardware. Windows and Ubuntu/Linux are supported when these components are configured correctly.
 
@@ -16,7 +16,7 @@ The runtime and models are supplied by the operator. For GPU telemetry, install 
 
 ### Required application files
 
-Use the complete application distribution. Important files include `app.py`, `requirements.txt`, `install/schema.sql`, `install/seed.sql`, the applicable `install/upgrade_v1_2.sql`, `install/upgrade_v1_3.sql`, and `install/upgrade_v1_4.sql` scripts, and `speech_runtime.py` for the optional speech adapter. The application also needs its normal templates, static files, helpers, and configuration example.
+Use the complete application distribution. Important files include `app.py`, `requirements.txt`, `install/schema.sql`, `install/seed.sql`, the applicable `install/upgrade_v1_2.sql`, `install/upgrade_v1_3.sql`, `install/upgrade_v1_4.sql`, and `install/upgrade_v1_5.sql` scripts, and `speech_runtime.py` for the optional speech adapter. The application also needs its normal templates, static files, helpers, and configuration example.
 
 Keep a local model directory such as `LLMs/`, or configure another location in **Models DIR**.
 
@@ -35,11 +35,11 @@ cd /srv/llmcontroller
 ./venv/bin/docling-tools models download layout tableformer --output-dir /srv/llmcontroller/docling_artifacts
 ```
 
-Windows, using the existing global-Python example:
+Windows, using the application virtual environment:
 
-```cmd
-cd /d E:\LLM-Controller
-C:\Python311\Scripts\docling-tools.exe models download layout tableformer --output-dir E:\LLM-Controller\docling_artifacts
+```powershell
+Set-Location 'C:\llm-controller-ce'
+.\venv\Scripts\docling-tools.exe models download layout tableformer --output-dir C:\llm-controller-ce\docling_artifacts
 ```
 
 Use the `docling-tools` executable from **your application's Python environment**; the example paths are not mandatory. Keep the output at `<LLM_CONTROLLER_DIR>/docling_artifacts` with these exact child directory names:
@@ -54,7 +54,11 @@ If downloaded repositories have another namespace-derived name, such as `ds4sd--
 
 ## Existing installation upgrades
 
+**Fresh installations** use the web installer to import `install/schema.sql` and `install/seed.sql`, including the v1.5 version value; they do not need upgrade scripts. **Existing installations** follow the preparation and ordered upgrades below.
+
 These are **manual operator steps**, not actions for a coding agent. Before upgrading, stop CE and back up MySQL, `chats.sqlite`, `bootstrap_config.json`, and the matching `flask_secret.key`. Preserve backups outside the public application/documentation tree.
+
+If conversational Memory has been used, also back up the complete `data/memory/` directory while CE is stopped.
 
 Treat the matching `flask_secret.key` as sensitive, protected backup material. Stored SMTP credentials use encryption key material derived from it; if the matching key is unavailable after restoration, SMTP credentials must be entered again.
 
@@ -67,6 +71,47 @@ python -m pip install -r requirements.txt
 Use the actual application interpreter in place of `python` when necessary. Do not substitute the optional speech interpreter.
 
 Apply every required upgrade in order. **Do not execute fresh-install schema or seed files against an existing database.** Do not use MySQL's `--force`; if a statement fails, keep CE stopped and resolve the error. MySQL DDL commits independently, so an upgrade is not an all-or-nothing transaction.
+
+Run the applicable scripts from the application root, with the MySQL client available on PATH and the configured database selected by the command's final database argument:
+
+| Starting version | Scripts to run, in order |
+| --- | --- |
+| v1.2 | `upgrade_v1_3.sql` → `upgrade_v1_4.sql` → `upgrade_v1_5.sql` |
+| v1.3 / v1.3.0 | `upgrade_v1_4.sql` → `upgrade_v1_5.sql` |
+| v1.4 | `upgrade_v1_5.sql` |
+
+All scripts are in `install/`. For pre-v1.2 databases, first complete the historical v1.1 → v1.2 step below. Earlier v1.5 Beta installations that used the previous migration should rerun the finalized `upgrade_v1_5.sql`. Keep CE stopped until every applicable script succeeds.
+
+### v1.4 to v1.5 upgrade
+
+After completing any earlier required upgrades, ensure the MySQL client is on PATH. On Windows, its default MySQL 8.0 location can be added to the current PowerShell session:
+
+```powershell
+$env:Path = 'C:\Program Files\MySQL\MySQL Server 8.0\bin;' + $env:Path
+```
+
+From the application root, run:
+
+```bash
+mysql -u llmcontroller -p llmcontroller < install/upgrade_v1_5.sql
+```
+
+Replace the example account and database with your configured values. From PowerShell, use CMD's input redirection:
+
+```powershell
+cmd /c "mysql -u llmcontroller -p llmcontroller < install/upgrade_v1_5.sql"
+```
+
+The script:
+
+- Adds `llm_benchmark_models.starts_in_thinking_mode` as `TINYINT(1) NOT NULL DEFAULT 0` when absent.
+- Adds `llm_user_preferences.personal_memory_enabled` as `TINYINT(1) NOT NULL DEFAULT 1` when absent.
+- Seeds `llm.memory.enabled` as default-off, preserving an existing value.
+- Sets `app.version` to `LLM Controller CE v1.5` after the column changes.
+
+Rerunning it preserves existing column values and Memory choices. It checks for column presence, not an existing column's definition. The script does not modify SQLite or install Memory packages/artifacts; normal CE startup handles the existing SQLite additions, including Project Memory mode. Optional Memory setup is covered in the [Memory guide](docs/MEMORY.md#operator-setup).
+
+Restart CE using the existing application environment. Confirm **LLM Controller CE v1.5** in About/settings, verify that the model registry loads, load a model, and complete a short chat. Confirm System Instructions and Personal Memory preferences save and reload. The displayed version comes from `llm_app_settings.app.version`; both fresh seed data and this upgrade now supply the same v1.5 value.
 
 ### v1.3 to v1.4 upgrade
 
@@ -100,7 +145,7 @@ cmd /c "mysql -u llmcontroller -p llmcontroller < install/upgrade_v1_3.sql"
 
 It can be rerun without replacing existing preference rows; it does not repair an already-existing table with a different definition. SQLite Project and request-tracking tables are initialized at application startup; this script does not modify SQLite.
 
-Continue with the v1.4 upgrade before starting a v1.4 application. After the complete upgrade, restart CE, confirm the About version, and check that System Instructions save and reload.
+Continue with the v1.4 and v1.5 upgrades before starting the v1.5 application. Perform the verification steps in [v1.4 to v1.5 upgrade](#v14-to-v15-upgrade) after the complete sequence.
 
 ### Historical v1.1 to v1.2 upgrade
 
@@ -112,7 +157,7 @@ cp chats.sqlite chats-before-v1.2.sqlite
 mysql -u llmcontroller -p llmcontroller < install/upgrade_v1_2.sql
 ```
 
-Replace the example backup destinations with secure locations outside the public application tree before running them. CE must already be stopped. This historical migration sets the version to v1.2; complete the v1.3 and v1.4 upgrades in order before restarting.
+Replace the example backup destinations with secure locations outside the public application tree before running them. CE must already be stopped. This historical migration sets the version to v1.2; complete the v1.3, v1.4, and v1.5 upgrades in order before restarting the v1.5 application.
 
 ## Ubuntu/Linux fresh install
 
@@ -406,60 +451,11 @@ The current limits and retention rules are maintained in [Chat, Projects, and fi
 
 The old fixed 25,000-row import ceiling is removed. **Maximum Chat Import Size**, integrity/schema/ownership checks, and practical host-memory/request-time limits still apply. See [Import and export](docs/CHAT.md#import-and-export).
 
-## Windows default runtime layout
+## Windows installation
 
-The Windows notes assume that Python, MySQL, the application requirements, and the first-run application setup described above have been prepared for the Windows host. SQL actions remain manual operator steps; CMD input redirection can be used from PowerShell as shown under upgrades.
+Follow the [complete Windows installation guide](WINDOWS_INSTALL.md) for Python and its virtual environment, MySQL Server/account setup, runtime deployment, the validated CUDA/Ninja source build, first-run web initialization, verification, and troubleshooting.
 
-The default layout contains:
-
-```text
-<LLM_CONTROLLER_DIR>/
-  app.py
-  start_llm_controller.bat
-  llama-server/
-    llama-server.exe
-    ...required runtime DLLs...
-```
-
-Common runtime DLLs include `ggml.dll`, `ggml-base.dll`, `ggml-cpu.dll`, and `llama.dll`. CUDA builds may also need `ggml-cuda.dll` and other DLLs supplied with the compiled runtime. Keep the matching runtime files together.
-
-For a Windows CUDA source build, install compatible Visual Studio Build Tools, CMake, and an NVIDIA CUDA Toolkit. Obtain and extract the llama.cpp source archive into a source directory such as `C:\src\llama.cpp`:
-
-```powershell
-cd C:\src\llama.cpp
-cmake -S . -B build -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release
-cmake --build build --config Release -j 16
-.\build\bin\Release\llama-server.exe --list-devices
-```
-
-Optional architecture-specific configuration examples:
-
-```powershell
-# Tesla V100
-cmake -S . -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=70 -DCMAKE_BUILD_TYPE=Release
-
-# RTX PRO 6000 Blackwell / compute capability 12.0 class
-cmake -S . -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=120 -DCMAKE_BUILD_TYPE=Release
-```
-
-Choose the appropriate configuration before building. Copy the executable and matching DLLs into the CE runtime directory, using your actual application path:
-
-```powershell
-$ControllerDir = 'E:\LLM-Controller' # The folder containing app.py.
-New-Item -ItemType Directory -Path "$ControllerDir\llama-server" -Force
-Copy-Item .\build\bin\Release\llama-server.exe "$ControllerDir\llama-server\"
-Copy-Item .\build\bin\Release\*.dll "$ControllerDir\llama-server\"
-```
-
-## Windows run notes
-
-The default convenience launcher is:
-
-```cmd
-start_llm_controller.bat
-```
-
-Other launch methods are valid when they use the same application environment. For the running Command Prompt window, the existing operational guidance is to disable **QuickEdit Mode**, **Insert Mode**, **Enable line wrapping selection**, and **Extended text selection keys** in the console properties to reduce accidental console-interaction problems.
+The guide uses `C:\llm-controller-ce\` for the application and keeps the optional llama.cpp source/build tree at `C:\src\llama.cpp\`. It launches CE with the environment's Python executable explicitly. The batch launcher also selects the application's `venv\Scripts\python.exe` when present, without activation, and otherwise uses the operator-configured `python` on PATH.
 
 ## Storage and host dependencies
 

@@ -130,8 +130,13 @@ let socketJoinedChatSessionId = null;
 const STALE_PAGE_PROMPT_DRAFT_KEY = "llmcontroller.pendingPromptDraft";
 let chatHistorySessions = [];
 let projectRecords = [];
-let activeProjectFilter = "all";
+let activeProjectFilter = "unassigned";
 let editingProjectId = null;
+let projectEditorMode = "project-create";
+let renamingSessionId = null;
+let projectEditorSaving = false;
+const pendingProjectDeletes = new Set();
+const pendingSessionDeletes = new Set();
 let assigningProjectSessionId = null;
 let projectModalPreviousFocus = null;
 let initialUrlSessionHandled = false;
@@ -1322,7 +1327,7 @@ async function createNewSession(options = {}, projectId = null) {
         "Conversation could not be assigned to the Project."
       );
     }
-    setActiveProjectFilter(normalizedProjectId ? projectFilterKey(normalizedProjectId) : "all");
+    setActiveProjectFilter(normalizedProjectId ? projectFilterKey(normalizedProjectId) : "unassigned");
     loadChatHistory();
     return currentSessionId;
   } catch (err) {
@@ -1391,15 +1396,11 @@ function unassignedConversationCount() {
 }
 
 function setActiveProjectFilter(filterKey) {
-  const requestedFilter = String(filterKey || "all");
-  if (requestedFilter.startsWith("project:") && !getProjectById(requestedFilter.slice("project:".length))) {
-    activeProjectFilter = "all";
-  } else if (requestedFilter === "unassigned") {
-    activeProjectFilter = "unassigned";
-  } else if (requestedFilter.startsWith("project:")) {
+  const requestedFilter = String(filterKey || "unassigned");
+  if (requestedFilter.startsWith("project:") && getProjectById(requestedFilter.slice("project:".length))) {
     activeProjectFilter = requestedFilter;
   } else {
-    activeProjectFilter = "all";
+    activeProjectFilter = "unassigned";
   }
   renderProjectList();
   displayGroupedSessions(chatHistorySessions);
@@ -1484,12 +1485,11 @@ function renderProjectList() {
   if (!list) return;
 
   if (activeProjectFilter.startsWith("project:") && !getActiveProject()) {
-    activeProjectFilter = "all";
+    activeProjectFilter = "unassigned";
   }
 
   list.innerHTML = "";
-  list.appendChild(createProjectFilterRow("all", "All Chats", chatHistorySessions.length));
-  list.appendChild(createProjectFilterRow("unassigned", "Unassigned", unassignedConversationCount()));
+  list.appendChild(createProjectFilterRow("unassigned", "Chats", unassignedConversationCount()));
 
   projectRecords.forEach(project => {
     list.appendChild(createProjectFilterRow(
@@ -1502,13 +1502,7 @@ function renderProjectList() {
 
   const context = document.getElementById("chatHistoryContext");
   if (context) {
-    if (activeProjectFilter === "unassigned") {
-      context.textContent = "Unassigned Chats";
-    } else if (getActiveProject()) {
-      context.textContent = getActiveProject().name;
-    } else {
-      context.textContent = "All Chats";
-    }
+    context.textContent = getActiveProject()?.name || "Chats";
     context.title = context.textContent;
   }
 }
@@ -1539,6 +1533,9 @@ function closeProjectModal(modalName) {
     assigningProjectSessionId = null;
   } else {
     editingProjectId = null;
+    renamingSessionId = null;
+    projectEditorMode = "project-create";
+    projectMemoryRequest += 1;
   }
   if (projectModalPreviousFocus && document.contains(projectModalPreviousFocus)) {
     projectModalPreviousFocus.focus();
@@ -1546,21 +1543,41 @@ function closeProjectModal(modalName) {
   projectModalPreviousFocus = null;
 }
 
-function openProjectEditor(project = null) {
+function openProjectEditor(project = null, chat = null) {
+  if (projectEditorSaving) return;
   const modal = document.getElementById("projectEditorModal");
   const title = document.getElementById("projectEditorTitle");
-  const idInput = document.getElementById("projectEditorId");
   const nameInput = document.getElementById("projectNameInput");
   const instructionsInput = document.getElementById("projectInstructionsInput");
   const error = document.getElementById("projectEditorError");
   if (!modal || !nameInput || !instructionsInput) return;
 
   projectModalPreviousFocus = document.activeElement;
+  renamingSessionId = chat ? chat.session_id : null;
   editingProjectId = project ? normalizeProjectId(project.id) : null;
-  if (title) title.textContent = editingProjectId ? "Edit Project" : "Create Project";
-  if (idInput) idInput.value = editingProjectId ? String(editingProjectId) : "";
+  projectEditorMode = chat ? "chat-rename" : editingProjectId ? "project-edit" : "project-create";
+  if (title) title.textContent = chat ? "Rename Chat" : editingProjectId ? "Edit Project" : "Create Project";
+  const fields = document.getElementById("projectEditorFields");
+  fields.hidden = fields.disabled = Boolean(chat);
+  nameInput.maxLength = chat ? 50 : 100;
+  document.getElementById("projectEditorSaveButton").textContent = chat ? "Save Name" : "Save Project";
+  modal.querySelector(".user-close-btn").setAttribute("aria-label", chat ? "Close Chat rename" : "Close Project editor");
+  if (error) error.textContent = "";
+  projectMemoryRequest += 1;
+  document.getElementById("projectMemoryBrowser").replaceChildren();
+  if (chat) {
+    nameInput.value = String(chat.name || "");
+    modal.classList.add("active");
+    nameInput.focus();
+    nameInput.select();
+    return;
+  }
   nameInput.value = project ? String(project.name || "") : "";
   instructionsInput.value = project ? String(project.instructions || "") : "";
+  document.getElementById("projectMemoryMode").value = project?.memory_mode || "project";
+  document.getElementById("projectMemoryHeading").textContent = project ? `Memory for ${project.name}` : "Project Memory";
+  document.getElementById("refreshProjectMemory").disabled = !editingProjectId;
+  document.getElementById("projectInstructionsTab").click();
   if (error) error.textContent = "";
   modal.classList.add("active");
   nameInput.focus();
@@ -1599,60 +1616,74 @@ function openProjectAssignment(sessionRecord) {
 
 async function saveProject(event) {
   event.preventDefault();
+  if (projectEditorSaving) return;
+  const isChatRename = projectEditorMode === "chat-rename";
   const nameInput = document.getElementById("projectNameInput");
   const instructionsInput = document.getElementById("projectInstructionsInput");
   const saveButton = document.getElementById("projectEditorSaveButton");
   const error = document.getElementById("projectEditorError");
-  const name = String(nameInput?.value || "").trim();
+  // Chat validation belongs to RenameSessionForm, including validation before trimming.
+  const rawName = String(nameInput?.value || "");
+  const name = isChatRename ? rawName : rawName.trim();
   if (!name) {
-    if (error) error.textContent = "Project name is required.";
+    if (error) error.textContent = isChatRename ? "Name cannot be empty" : "Project name is required.";
     nameInput?.focus();
     return;
   }
 
   const isEditing = Boolean(editingProjectId);
-  const payload = {
+  const payload = isChatRename ? { session_id: renamingSessionId, new_name: name } : {
     name,
+    memory_mode: document.getElementById("projectMemoryMode").value,
     instructions: String(instructionsInput?.value || "")
   };
-  if (isEditing) payload.project_id = editingProjectId;
+  if (!isChatRename && isEditing) payload.project_id = editingProjectId;
 
+  projectEditorSaving = true;
   if (saveButton) saveButton.disabled = true;
   if (error) error.textContent = "";
   try {
     await window.ApiHttp.postJSONRequest(
-      `${PROJECTS_PREFIX}/${isEditing ? "update" : "create"}`,
+      isChatRename ? `${CHAT_PREFIX}/rename_session` : `${PROJECTS_PREFIX}/${isEditing ? "update" : "create"}`,
       payload,
       {},
-      `Project could not be ${isEditing ? "updated" : "created"}.`
+      isChatRename ? "Chat could not be renamed." : `Project could not be ${isEditing ? "updated" : "created"}.`
     );
     closeProjectModal("editor");
-    await loadProjects();
+    if (isChatRename) await loadChatHistory();
+    else await loadProjects();
   } catch (err) {
-    if (error) error.textContent = getAsyncRequestErrorMessage(err, "Project could not be saved.");
+    if (error) error.textContent = getAsyncRequestErrorMessage(err, isChatRename ? "Chat could not be renamed." : "Project could not be saved.");
   } finally {
+    projectEditorSaving = false;
     if (saveButton) saveButton.disabled = false;
   }
 }
 
 async function deleteProject(project) {
-  if (!project || !confirm(`Delete Project "${project.name}"? Its conversations will remain under Unassigned.`)) {
+  if (!project || pendingProjectDeletes.has(project.id)) return;
+  const projectId = project.id;
+  if (!await showDecisionDialog({ title: "Delete Project", actionLabel: "Delete Project",
+    message: `Delete Project "${project.name}" and its saved Project Memory? Its conversations will remain in Chats. Personal Memory and other Projects are kept.` })) {
     return;
   }
 
+  pendingProjectDeletes.add(projectId);
   try {
     await window.ApiHttp.postJSONRequest(
       `${PROJECTS_PREFIX}/delete`,
-      { project_id: project.id },
+      { project_id: projectId },
       {},
       "Project could not be deleted."
     );
-    if (activeProjectFilter === projectFilterKey(project.id)) {
+    if (activeProjectFilter === projectFilterKey(projectId)) {
       activeProjectFilter = "unassigned";
     }
     await Promise.all([loadProjects(), loadChatHistory()]);
   } catch (err) {
     showCustomAlert(getAsyncRequestErrorMessage(err, "Project could not be deleted."));
+  } finally {
+    pendingProjectDeletes.delete(projectId);
   }
 }
 
@@ -1742,11 +1773,11 @@ function getChatHistorySearchTerm() {
 
 function getFilteredChatSessions(sessions) {
   let visibleSessions = sessions || [];
-  if (activeProjectFilter === "unassigned") {
-    visibleSessions = visibleSessions.filter(session => normalizeProjectId(session.project_id) === null);
-  } else if (activeProjectFilter.startsWith("project:")) {
+  if (activeProjectFilter.startsWith("project:")) {
     const activeProjectId = normalizeProjectId(activeProjectFilter.slice("project:".length));
     visibleSessions = visibleSessions.filter(session => normalizeProjectId(session.project_id) === activeProjectId);
+  } else {
+    visibleSessions = visibleSessions.filter(session => normalizeProjectId(session.project_id) === null);
   }
 
   const term = getChatHistorySearchTerm();
@@ -1761,7 +1792,6 @@ function getFilteredChatSessions(sessions) {
 
 function getEmptyChatHistoryMessage() {
   if (getChatHistorySearchTerm()) return "No matching chats";
-  if (activeProjectFilter === "unassigned") return "No unassigned chats";
   if (getActiveProject()) return "No chats in this Project";
   return "No chats yet";
 }
@@ -1947,11 +1977,31 @@ function formatResponseFooter(metrics) {
   return parts.join(" | ");
 }
 
+function setMessageCopyText(bubble, message) {
+  // Keep the source text separate from rendered Markdown, reasoning, and message chrome.
+  bubble._messageText = String(message ?? "");
+  const copyBtn = bubble.querySelector(".message-copy-btn");
+  if (copyBtn) copyBtn.disabled = !bubble._messageText;
+}
+
+function createMessageCopyButton(bubble) {
+  const copyBtn = document.createElement("button");
+  copyBtn.type = "button";
+  copyBtn.className = "message-action-btn message-copy-btn";
+  copyBtn.innerText = COPY_BUTTON_TEXT;
+  copyBtn.disabled = !bubble._messageText;
+  copyBtn.onclick = function () {
+    copyTextToClipboard(bubble._messageText, copyBtn, { normalizeCode: false });
+  };
+  return copyBtn;
+}
+
 function setUserBubbleText(bubble, message) {
   if (!bubble) return;
   const messageDiv = bubble.querySelector(".message");
   if (!messageDiv) return;
   messageDiv.textContent = message || "";
+  setMessageCopyText(bubble, message);
 }
 
 function captureBotBubbleSnapshot(bubble) {
@@ -1965,6 +2015,7 @@ function captureBotBubbleSnapshot(bubble) {
   return {
     messageId: bubble.dataset.messageId || "",
     messageHtml: messageDiv ? messageDiv.innerHTML : "",
+    messageText: bubble._messageText || "",
     footerText: footer ? footer.innerText : "",
     thoughtsText: thoughtsDiv ? thoughtsDiv.innerText : "",
     thoughtsDisplay: thoughtsDiv ? thoughtsDiv.style.display : "none",
@@ -1986,6 +2037,7 @@ function captureUserBubbleSnapshot(bubble) {
 function restoreBotBubbleFromSnapshot(snapshot, targetBubble) {
   if (!snapshot || !targetBubble) return false;
   targetBubble.dataset.messageId = snapshot.messageId || "";
+  setMessageCopyText(targetBubble, snapshot.messageText);
 
   const messageDiv = targetBubble.querySelector(".message");
   const footer = targetBubble.querySelector(".footer");
@@ -2069,7 +2121,7 @@ function startPromptEdit(messageId, messageText) {
 
   if (pendingPromptEdit && pendingPromptEdit.sourceMessageId === messageId) {
     clearComposerAttachments();
-    clearPromptEditState();
+    clearPromptEditState({ clearInput: true });
     return;
   }
 
@@ -2105,6 +2157,7 @@ function prepareBubbleForStreaming(bubble, options = {}) {
   bubble._streamText = "";
   bubble._thoughtsText = "";
   bubble._thoughtsExpanded = false;
+  if (!preserveMessage) setMessageCopyText(bubble, "");
 
   if (messageDiv) {
     messageDiv.classList.add("streaming-plain");
@@ -2558,7 +2611,9 @@ function revealGeneratedApiKey(apiKey) {
 }
 
 async function regenerateApiKey() {
-  if (apiAccessState.key_configured && !window.confirm("Regenerate the API key? The current key will stop working immediately.")) {
+  if (document.getElementById("apiKeyGenerateBtn")?.disabled) return;
+  if (apiAccessState.key_configured && !await showDecisionDialog({ title: "Regenerate API key", actionLabel: "Regenerate Key",
+    message: "Regenerate the API key? The current key will stop working immediately." })) {
     return;
   }
 
@@ -2593,7 +2648,9 @@ async function regenerateApiKey() {
 
 async function revokeApiKey() {
   if (!apiAccessState.key_configured) return;
-  if (!window.confirm("Revoke the API key? Existing clients will immediately lose access.")) return;
+  if (document.getElementById("apiKeyRevokeBtn")?.disabled) return;
+  if (!await showDecisionDialog({ title: "Revoke API key", actionLabel: "Revoke Key",
+    message: "Revoke the API key? Existing clients will immediately lose access." })) return;
 
   const button = document.getElementById("apiKeyRevokeBtn");
   const csrfToken = (document.getElementById("adminCsrfToken")?.value || "").trim();
@@ -2706,6 +2763,7 @@ function loadSettings() {
         setVal("titleModelPathInput", data.title_model_path || "");
       }
       setChecked("modelPickerShowFriendlyNames", data.model_picker_show_friendly_names);
+      setChecked("memoryEnabled", data.memory_enabled);
       setVal("scanDirectoryInput", data.scan_directory);
       setVal("versionDisplay", data.version);
       if (Number.isInteger(data.chat_import_max_mib) && data.chat_import_max_mib > 0) {
@@ -2832,6 +2890,7 @@ function saveSettings() {
       ? window.getTitleModelSelection()
       : getVal("titleModelPathInput").trim(),
     model_picker_show_friendly_names: getChecked("modelPickerShowFriendlyNames"),
+    memory_enabled:    getChecked("memoryEnabled"),
     api_enabled:       getChecked("apiAccessEnabled"),
     n_gpu_layers:     getVal("defaultGpuLayers"),
     n_cpu_threads:    getVal("defaultCpuThreads"),
@@ -3196,6 +3255,7 @@ function loadChat(session_id) {
         });
 
         const botBubble = createBotBubble();
+        setMessageCopyText(botBubble, msg.bot_response);
         if (msg.prompt_id) {
           botBubble.dataset.messageId = msg.prompt_id;
         }
@@ -3256,9 +3316,12 @@ function loadChat(session_id) {
 
 
 
-function deleteSession(session_id) {
-  if (!confirm("Are you sure you want to delete this chat?")) return;
-  window.ApiHttp.postJSONRequest(`${CHAT_PREFIX}/delete_session`, {
+async function deleteSession(session_id) {
+  if (pendingSessionDeletes.has(session_id)) return;
+  if (!await showDecisionDialog({ title: "Delete chat", actionLabel: "Delete Chat",
+    message: "Delete this chat? Saved Memory is kept. Use Forget or Clear in Memory settings to remove it." })) return;
+  pendingSessionDeletes.add(session_id);
+  return window.ApiHttp.postJSONRequest(`${CHAT_PREFIX}/delete_session`, {
     session_id
   }, {}, "Could not delete this chat.").then(() => {
     if (currentSessionId === session_id) {
@@ -3268,21 +3331,18 @@ function deleteSession(session_id) {
       if (isResponding) stopActiveResponse();
       else syncSocketChatSessionSubscription("");
       clearCurrentSessionId();
+      document.getElementById("chatMessages").innerHTML = "";
     }
-    loadChatHistory();
+    return loadChatHistory();
   }).catch(err => {
     if (!isRedirectingToLoginError(err)) {
       showCustomAlert(getActionErrorMessage("", err, "Could not delete this chat."));
     }
-  });
+  }).finally(() => pendingSessionDeletes.delete(session_id));
 }
 
 function renameSession(session_id, currentName) {
-  const new_name = prompt("Enter a new session name:", currentName);
-  if (!new_name) return;
-  postJSON(`${CHAT_PREFIX}/rename_session`, {
-session_id, new_name 
-  }).then(() => loadChatHistory());
+  openProjectEditor(null, { session_id, name: currentName });
 }
 
 function getModelDisplayName(pathOrName) {
@@ -3338,14 +3398,17 @@ function setModelStartLoadingState(isStarting, modelPath = "") {
 function startModel(options = {}) {
   const skipCpuOnlyRetryPrompt = Boolean(options && options.skipCpuOnlyRetryPrompt);
   if (modelStartInProgress) return;
-  const model = document.getElementById('modelSelect').value;
-  const nGpuLayers = document.getElementById('nGpuLayers').value;
-  const nCpuThreads = document.getElementById('nCpuThreads').value;
-  const temperature = document.getElementById('temperature').value;
-  const topK = document.getElementById('topK').value;
-  const topP = document.getElementById('topP').value;
-  const repeatPenalty = document.getElementById('repeatPenalty').value;
-  const seed = document.getElementById('seed').value;
+  const startup = options.startup || {
+    model: document.getElementById('modelSelect').value,
+    nGpuLayers: document.getElementById('nGpuLayers').value,
+    nCpuThreads: document.getElementById('nCpuThreads').value,
+    temperature: document.getElementById('temperature').value,
+    topK: document.getElementById('topK').value,
+    topP: document.getElementById('topP').value,
+    repeatPenalty: document.getElementById('repeatPenalty').value,
+    seed: document.getElementById('seed').value
+  };
+  const { model, nGpuLayers, nCpuThreads, temperature, topK, topP, repeatPenalty, seed } = startup;
 
   const getStartModelErrorMessage = (data, fallback = 'Unknown error') => {
     if (data && typeof data.message === "string" && data.message.trim()) return data.message.trim();
@@ -3379,7 +3442,7 @@ function startModel(options = {}) {
       }
       return { ok: response.ok, data };
     })
-    .then(({ ok, data }) => {
+    .then(async ({ ok, data }) => {
       if (ok && data.status === 'started') {
         GPU_LAYERS = String(nGpuLayers ?? "");
         CPU_THREADS = String(nCpuThreads ?? "");
@@ -3399,14 +3462,17 @@ function startModel(options = {}) {
         pollModelStatus();
 
         if (shouldOfferCpuRetry) {
-          const retryCpuOnly = confirm(
-            `${message}\n\nThis model appears too large for your current GPU configuration. Retry in CPU Only mode?`
-          );
+          // Prevent another start while deciding, and retry the captured request.
+          modelStartInProgress = true;
+          const retryCpuOnly = await showDecisionDialog({ title: "Retry in CPU Only mode", actionLabel: "Retry CPU Only", destructive: false,
+            message: `${message}\n\nThis model appears too large for your current GPU configuration. Retry in CPU Only mode?`
+          });
+          modelStartInProgress = false;
           if (retryCpuOnly) {
             if (typeof setCpuOnlyEnabled === "function") {
               setCpuOnlyEnabled(true);
             }
-            startModel({ skipCpuOnlyRetryPrompt: true });
+            startModel({ skipCpuOnlyRetryPrompt: true, startup: { ...startup, nGpuLayers: "0" } });
           }
           return;
         }
@@ -3618,6 +3684,7 @@ function appendUserMessage(message, options = {}) {
   const actions = document.createElement("div");
   actions.className = "message-actions";
 
+  actions.appendChild(createMessageCopyButton(bubble));
   const editBtn = document.createElement("button");
   editBtn.type = "button";
   editBtn.className = "message-action-btn edit-prompt-btn";
@@ -3629,6 +3696,7 @@ function appendUserMessage(message, options = {}) {
   actions.appendChild(editBtn);
 
   bubble.appendChild(actions);
+  setMessageCopyText(bubble, message);
   renderMessageAttachments(bubble, options.attachments || []);
   chatMessages.appendChild(bubble);
   chatMessages.scrollTop = chatMessages.scrollHeight;
@@ -3694,6 +3762,7 @@ function createBotBubble() {
   };
   actions.appendChild(stopBtn);
 
+  actions.appendChild(createMessageCopyButton(bubble));
   const regenerateBtn = document.createElement("button");
   regenerateBtn.type = "button";
   regenerateBtn.className = "message-action-btn regenerate-response-btn";
@@ -3913,6 +3982,7 @@ socket.on("receive_message", function (data) {
   // --- STREAM: answer delta (plain text only) ---
   if (typeof data.delta === "string" && data.delta.length) {
     bubble._streamText = (bubble._streamText || "") + data.delta;
+    setMessageCopyText(bubble, bubble._streamText);
 
     if (messageDiv) {
       const liveText = bubble._streamText.replace(/\n{3,}/g, "\n\n");
@@ -3949,6 +4019,7 @@ socket.on("receive_message", function (data) {
     } else {
       // Prefer authoritative final text from server, fallback to accumulated
       const finalText = (typeof data.bot_response === "string" ? data.bot_response : (bubble._streamText || ""));
+      setMessageCopyText(bubble, finalText);
 
       if (messageDiv) {
         messageDiv.classList.remove("streaming-plain");
@@ -4140,6 +4211,304 @@ function handleDrawerBarOnResize() {
   }
   queueFixedLayoutMetricsUpdate();
 }
+let personalMemoryRequest = 0;
+let projectMemoryRequest = 0;
+
+function renderMemoryBrowser(container, data, scope) {
+  container.replaceChildren();
+  const states = {
+    disabled: "Memory is turned off by the administrator. Saved memories are kept.",
+    starting: "Memory is starting. Refresh shortly to view saved memories.",
+    unavailable: "Memory unavailable. You can continue using the rest of this page."
+  };
+  if (data.state !== 'ready') {
+    container.textContent = states[data.state] || states.unavailable;
+    return;
+  }
+  const items = Array.isArray(data.items) ? data.items : [];
+  let busy = false;
+  async function manage(payload) {
+    if (busy || !scope.isCurrent()) return;
+    busy = true;
+    const pastTense = { edit: 'updated', forget: 'forgotten', clear: 'cleared' }[payload.action];
+    const failure = `Memory could not be ${pastTense}. Refresh before retrying; some changes may already have been applied.`;
+    container.querySelectorAll('button, textarea').forEach(control => { control.disabled = true; });
+    feedback.textContent = 'Saving Memory changes…';
+    feedback.className = 'muted-note';
+    let message = `Memory ${pastTense}.`;
+    let failed = false;
+    try {
+      await window.ApiHttp.postJSONRequest(scope.url, payload, {}, failure);
+    } catch (err) {
+      if (isRedirectingToLoginError(err)) return;
+      failed = true;
+      // Use only this endpoint's safe JSON error, never an HTML/proxy response.
+      message = err?.apiResult?.data?.message || failure;
+    }
+    if (!scope.isCurrent()) return;
+    // Re-read on failure too: Qdrant and history writes are not one transaction.
+    if (await scope.reload()) {
+      const result = document.createElement('p');
+      result.className = failed ? 'memory-action-error' : 'memory-action-success';
+      result.textContent = message;
+      container.prepend(result);
+    }
+  }
+  const list = document.createElement('div');
+  list.className = 'memory-card-list';
+  const navigation = document.createElement('div');
+  navigation.className = 'memory-browser-navigation';
+  const previous = document.createElement('button');
+  const next = document.createElement('button');
+  const position = document.createElement('span');
+  previous.textContent = 'Previous';
+  next.textContent = 'Next';
+  [previous, next].forEach(button => { button.type = 'button'; button.className = 'user-action-btn'; });
+  navigation.append(previous, position, next);
+  const note = document.createElement('p');
+  note.className = 'muted-note';
+  note.textContent = data.has_more
+    ? `Showing up to ${data.limit} saved memories. More memories exist beyond this list; Clear removes the entire scope.`
+    : 'Saved memories may be outdated. Edit or forget them here.';
+  const feedback = document.createElement('p');
+  feedback.setAttribute('role', 'status');
+  const clearArea = document.createElement('div');
+  clearArea.className = 'memory-clear';
+  const clear = document.createElement('button');
+  clear.type = 'button';
+  clear.className = 'user-action-btn memory-destructive';
+  clear.textContent = scope.projectName ? 'Clear Project Memory' : 'Clear Personal Memory';
+  clear.addEventListener('click', async () => {
+    if (busy || !scope.isCurrent()) return;
+    const name = scope.projectName ? `Project Memory for "${scope.projectName}"` : 'Personal Memory';
+    if (!await showDecisionDialog({ title: 'Clear Memory', actionLabel: 'Clear Memory', requiredToken: 'CLEAR',
+      message: `Clear all ${name}? Saved memories and their recent source context will be removed. Chats and settings are kept. This cannot be undone. Type CLEAR to confirm.` })) return;
+    manage({ action: 'clear', confirmed: true });
+  });
+  const clearNote = document.createElement('p');
+  clearNote.className = 'muted-note';
+  clearNote.textContent = 'Clearing saved Memory keeps chats and settings. Other Memory scopes are unaffected.';
+  clearArea.append(clear, clearNote);
+  container.append(feedback, list, navigation, note, clearArea);
+  let page = 0;
+  const pageSize = 5;
+  function drawPage() {
+    list.replaceChildren();
+    const start = page * pageSize;
+    items.slice(start, start + pageSize).forEach(item => {
+      const card = document.createElement('article');
+      card.className = 'memory-card';
+      const text = document.createElement('p');
+      text.textContent = item.text;
+      card.appendChild(text);
+      const dates = [];
+      [['created_at', 'Created'], ['updated_at', 'Updated']].forEach(([key, label]) => {
+        if (!item[key]) return;
+        const date = new Date(item[key]);
+        if (!Number.isNaN(date.getTime())) dates.push(`${label}: ${date.toLocaleString()}`);
+      });
+      if (dates.length) {
+        const timestamp = document.createElement('div');
+        timestamp.className = 'muted-note';
+        timestamp.textContent = dates.join(' · ');
+        card.appendChild(timestamp);
+      }
+      if (item.edited_manually) {
+        const edited = document.createElement('div');
+        edited.className = 'muted-note';
+        edited.textContent = 'Edited manually';
+        card.appendChild(edited);
+      }
+      const source = item.source || {};
+      const sourceFields = [['model', 'Model'], ['action', 'Action'], ['session_id', 'Conversation']]
+        .filter(([key]) => source[key]);
+      if (sourceFields.length) {
+        const details = document.createElement('details');
+        const summary = document.createElement('summary');
+        summary.textContent = 'Source';
+        details.appendChild(summary);
+        sourceFields.forEach(([key, label]) => {
+          const field = document.createElement('div');
+          field.textContent = `${label}: ${source[key]}`;
+          details.appendChild(field);
+        });
+        card.appendChild(details);
+      }
+      const actions = document.createElement('div');
+      actions.className = 'memory-card-actions';
+      const edit = document.createElement('button');
+      edit.type = 'button';
+      edit.className = 'user-action-btn';
+      edit.textContent = 'Edit';
+      const forget = document.createElement('button');
+      forget.type = 'button';
+      forget.className = 'user-action-btn memory-destructive';
+      forget.textContent = 'Forget';
+      forget.addEventListener('click', async () => {
+        if (busy || !scope.isCurrent()) return;
+        if (!await showDecisionDialog({ title: 'Forget Memory', actionLabel: 'Forget Memory',
+          message: 'Forget this memory? The saved Memory will be removed. Recent source context for this scope will also be cleared so it cannot recreate the fact. Chats are kept. This cannot be undone.' })) return;
+        manage({ action: 'forget', id: item.id, confirmed: true });
+      });
+      edit.addEventListener('click', () => {
+        text.hidden = actions.hidden = true;
+        const editor = document.createElement('div');
+        editor.className = 'memory-editor';
+        const input = document.createElement('textarea');
+        input.rows = 4;
+        input.setAttribute('aria-label', 'Memory text');
+        input.value = item.text;
+        const controls = document.createElement('div');
+        controls.className = 'memory-card-actions';
+        const save = document.createElement('button');
+        save.type = 'button';
+        save.className = 'user-action-btn memory-save';
+        save.textContent = 'Save Memory';
+        const cancel = document.createElement('button');
+        cancel.type = 'button';
+        cancel.className = 'user-action-btn';
+        cancel.textContent = 'Cancel';
+        save.addEventListener('click', () => {
+          const value = input.value.trim();
+          input.setCustomValidity(value ? '' : 'Memory text cannot be empty.');
+          if (!input.reportValidity()) return;
+          manage({ action: 'edit', id: item.id, text: value });
+        });
+        input.addEventListener('input', () => input.setCustomValidity(''));
+        cancel.addEventListener('click', () => {
+          editor.remove();
+          text.hidden = actions.hidden = false;
+          edit.focus();
+        });
+        controls.append(save, cancel);
+        editor.append(input, controls);
+        card.appendChild(editor);
+        input.focus();
+      });
+      actions.append(edit, forget);
+      card.appendChild(actions);
+      list.appendChild(card);
+    });
+    if (!items.length) list.textContent = 'No saved memories in this scope yet.';
+    navigation.hidden = !items.length;
+    position.textContent = `${start + 1}–${Math.min(start + pageSize, items.length)} of ${items.length} loaded`;
+    previous.disabled = page === 0;
+    next.disabled = start + pageSize >= items.length;
+    list.scrollTop = 0;
+  }
+  previous.addEventListener('click', () => { page -= 1; drawPage(); });
+  next.addEventListener('click', () => { page += 1; drawPage(); });
+  drawPage();
+}
+
+async function loadPersonalMemory() {
+  const requestId = ++personalMemoryRequest;
+  const container = document.getElementById('personalMemoryBrowser');
+  const checkbox = document.getElementById('personalMemoryEnabled');
+  const save = document.getElementById('savePersonalMemory');
+  checkbox.disabled = save.disabled = true;
+  container.textContent = 'Loading Personal Memory…';
+  try {
+    const data = await window.ApiHttp.requestJSON('/settings/personal_memory',
+      { method: 'GET', cache: 'no-store' }, 'Memory unavailable.');
+    if (requestId !== personalMemoryRequest) return;
+    if (typeof data.enabled === 'boolean') {
+      checkbox.checked = data.enabled;
+      checkbox.disabled = save.disabled = false;
+    }
+    renderMemoryBrowser(container, data, {
+      url: '/settings/personal_memory/manage',
+      isCurrent: () => requestId === personalMemoryRequest,
+      reload: loadPersonalMemory
+    });
+    return true;
+  } catch (err) {
+    if (requestId !== personalMemoryRequest || isRedirectingToLoginError(err)) return;
+    renderMemoryBrowser(container, { state: 'unavailable' });
+    return true;
+  }
+}
+
+async function loadProjectMemory() {
+  const requestId = ++projectMemoryRequest;
+  const projectId = editingProjectId;
+  const container = document.getElementById('projectMemoryBrowser');
+  if (!projectId) {
+    container.textContent = 'Save this Project to view its memories.';
+    return;
+  }
+  container.textContent = 'Loading Project Memory…';
+  try {
+    const data = await window.ApiHttp.requestJSON(`${PROJECTS_PREFIX}/${projectId}/memory`,
+      { method: 'GET', cache: 'no-store' }, 'Memory unavailable.');
+    if (requestId !== projectMemoryRequest || projectId !== editingProjectId) return;
+    renderMemoryBrowser(container, data, {
+      url: `${PROJECTS_PREFIX}/${projectId}/memory/manage`,
+      projectName: getProjectById(projectId)?.name || `Project ${projectId}`,
+      isCurrent: () => requestId === projectMemoryRequest && projectId === editingProjectId,
+      reload: loadProjectMemory
+    });
+    return true;
+  } catch (err) {
+    if (requestId !== projectMemoryRequest || isRedirectingToLoginError(err)) return;
+    renderMemoryBrowser(container, { state: 'unavailable' });
+    return true;
+  }
+}
+
+document.getElementById('refreshPersonalMemory').addEventListener('click', loadPersonalMemory);
+document.getElementById('refreshProjectMemory').addEventListener('click', loadProjectMemory);
+document.getElementById('personalMemoryForm').addEventListener('submit', async event => {
+  event.preventDefault();
+  const checkbox = document.getElementById('personalMemoryEnabled');
+  const save = document.getElementById('savePersonalMemory');
+  const alert = document.getElementById('personalMemoryAlert');
+  const enabled = checkbox.checked;
+  ++personalMemoryRequest;
+  checkbox.disabled = save.disabled = true;
+  document.getElementById('refreshPersonalMemory').disabled = true;
+  alert.textContent = 'Saving…';
+  alert.className = '';
+  try {
+    await window.ApiHttp.postJSONRequest('/settings/personal_memory', { enabled }, {},
+      'Personal Memory preference could not be saved.');
+    alert.textContent = 'Personal Memory preference saved.';
+    alert.className = 'success';
+  } catch (err) {
+    if (isRedirectingToLoginError(err)) return;
+    alert.textContent = 'Personal Memory preference could not be saved.';
+    alert.className = 'error';
+  } finally {
+    document.getElementById('refreshPersonalMemory').disabled = false;
+    await loadPersonalMemory();
+  }
+});
+
+(function initializeProjectSettingsTabs() {
+  const tabs = Array.from(document.querySelectorAll('#projectEditorModal [role="tab"]'));
+  function selectTab(index, focus = false) {
+    tabs.forEach((tab, i) => {
+      const selected = i === index;
+      tab.classList.toggle('active', selected);
+      tab.setAttribute('aria-selected', String(selected));
+      tab.tabIndex = selected ? 0 : -1;
+      document.getElementById(tab.getAttribute('aria-controls')).hidden = !selected;
+      if (selected && focus) tab.focus();
+    });
+    if (tabs[index].id === 'projectMemoryTab') loadProjectMemory();
+  }
+  tabs.forEach((tab, index) => {
+    tab.addEventListener('click', () => selectTab(index));
+    tab.addEventListener('keydown', event => {
+      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+      event.preventDefault();
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1
+        : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+      selectTab(next, true);
+    });
+  });
+})();
+
 async function loadSystemInstructionsPreference() {
   const input = document.getElementById('systemInstructionsInput');
   const alert = document.getElementById('system-instructions-alert');
@@ -4185,6 +4554,7 @@ async function loadSystemInstructionsPreference() {
       document.getElementById(tab.getAttribute('aria-controls')).hidden = !selected;
       if (selected && focus) tab.focus();
     });
+    if (tabs[index].id === 'accountMemoryTab') loadPersonalMemory();
   }
   tabs.forEach((tab, index) => {
     tab.addEventListener('click', () => selectTab(index));
@@ -4202,6 +4572,8 @@ function toggleUserSettingsModal(show) {
   closeAllDrawers();
   document.getElementById('userSettingsModal').style.display = show ? 'flex' : 'none';
   if (show) loadSystemInstructionsPreference();
+  if (show && document.getElementById('accountMemoryTab').getAttribute('aria-selected') === 'true') loadPersonalMemory();
+  if (!show) personalMemoryRequest += 1;
 }
 
 document.getElementById('systemInstructionsForm').onsubmit = function(e) {

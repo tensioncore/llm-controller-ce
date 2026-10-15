@@ -33,19 +33,20 @@ function getCopyButtonResetText(button) {
   return resetText;
 }
 
-function copyTextToClipboard(text, button) {
-  const normalizedText = normalizeCopiedCodeText(getCopySourceText(text, button));
+function copyTextToClipboard(text, button, { normalizeCode = true } = {}) {
+  const sourceText = getCopySourceText(text, button);
+  const clipboardText = normalizeCode ? normalizeCopiedCodeText(sourceText) : sourceText;
   const resetText = getCopyButtonResetText(button);
 
   if (navigator.clipboard && window.isSecureContext) {
-    navigator.clipboard.writeText(normalizedText).then(() => {
+    navigator.clipboard.writeText(clipboardText).then(() => {
       if (button) {
         button.innerText = COPY_BUTTON_SUCCESS_TEXT;
         setTimeout(() => { button.innerText = resetText; }, 1500);
       }
-    }).catch(() => fallbackCopy(normalizedText, button));
+    }).catch(() => fallbackCopy(clipboardText, button));
   } else {
-    fallbackCopy(normalizedText, button);
+    fallbackCopy(clipboardText, button);
   }
 }
 
@@ -65,7 +66,7 @@ function fallbackCopy(text, button) {
       setTimeout(() => { button.innerText = resetText; }, 1500);
     }
   } catch (err) {
-    alert("Could not copy!");
+    showCustomAlert("Could not copy!");
   }
   document.body.removeChild(textarea);
 }
@@ -235,7 +236,14 @@ function extractAndStandardizeMath(content) {
 }
 
 function showCustomAlert(message, isHTML = false) {
+  const previousFocus = document.activeElement;
+  let resolveDismissal;
+  const dismissed = new Promise(resolve => { resolveDismissal = resolve; });
   const modal = document.createElement("div");
+  modal.setAttribute("role", "dialog");
+  modal.setAttribute("aria-modal", "true");
+  modal.setAttribute("aria-label", "Message");
+  modal.tabIndex = -1;
   modal.style.position = "fixed";
   modal.style.top = 0;
   modal.style.left = 0;
@@ -247,9 +255,22 @@ function showCustomAlert(message, isHTML = false) {
   modal.style.justifyContent = "center";
   modal.style.alignItems = "center";
   modal.style.zIndex = 9999;
-  modal.onclick = function () {
-    document.body.removeChild(modal);
-  };
+  function dismiss() {
+    if (!modal.isConnected) return;
+    modal.remove();
+    window.removeEventListener("keydown", onKeyDown, true);
+    if (previousFocus?.isConnected) previousFocus.focus();
+    resolveDismissal();
+  }
+  function onKeyDown(event) {
+    if (document.activeElement !== modal && !modal.contains(document.activeElement)) return;
+    if (event.key === "Escape" || (event.key === "Enter" && event.target === modal)) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      dismiss();
+    }
+  }
+  modal.onclick = dismiss;
 
   const messageBox = document.createElement("div");
   messageBox.style.backgroundColor = "#fff";
@@ -270,4 +291,7 @@ function showCustomAlert(message, isHTML = false) {
 
   modal.appendChild(messageBox);
   document.body.appendChild(modal);
+  window.addEventListener("keydown", onKeyDown, true);
+  modal.focus();
+  return dismissed;
 }

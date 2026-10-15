@@ -68,7 +68,8 @@ CREATE TABLE IF NOT EXISTS `llm_benchmark_models` (
   `profile_math` tinyint(1) NOT NULL DEFAULT '0',
   `profile_agents` tinyint(1) NOT NULL DEFAULT '0',
   `profile_images` tinyint(1) NOT NULL DEFAULT '0',
-  `mmproj_path` varchar(1024) DEFAULT NULL
+  `mmproj_path` varchar(1024) DEFAULT NULL,
+  `starts_in_thinking_mode` tinyint(1) NOT NULL DEFAULT '0'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- --------------------------------------------------------
@@ -189,6 +190,7 @@ CREATE TABLE IF NOT EXISTS `llm_users` (
 CREATE TABLE IF NOT EXISTS `llm_user_preferences` (
   `user_id` int NOT NULL,
   `system_instructions` text DEFAULT NULL,
+  `personal_memory_enabled` tinyint(1) NOT NULL DEFAULT 1,
   `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

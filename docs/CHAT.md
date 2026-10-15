@@ -14,6 +14,12 @@ Responses stream into the conversation as the model generates them. Stop an in-p
 
 CE saves chat sessions, generates titles, and provides sidebar search. Direct chat URLs preserve the active conversation across a page refresh. Title generation normally uses the main model; administrators can configure an [optional title model](MODELS.md#chat-title-generation).
 
+Deleting a chat keeps its saved conversational Memory. Use **Forget** or **Clear**
+in Memory settings to remove saved facts. A completed user-prompt edit reconciles
+automatic Memory from that prompt; manually edited Memory is protected. Assistant
+regeneration and response-variant selection do not delete existing Memory.
+See [Memory lifecycle behavior](MEMORY.md#chat-and-project-lifecycle-slice-4).
+
 ### Reasoning display
 
 When a model returns supported reasoning content, CE provides a show/hide control separately from its answer. Reasoning availability and quality depend on the model and runtime; not every response includes it.
@@ -26,6 +32,11 @@ When a model returns supported reasoning content, CE provides a show/hide contro
 </details>
 
 ## Projects and instructions
+
+Moving a chat between Projects keeps existing Memory in its original scope;
+subsequent turns use the new scope. Deleting a Project clears its Project Memory,
+even when Memory is off, and keeps its conversations under Unassigned. If Memory
+cleanup fails, CE reports failure and retains the Project.
 
 Use **Projects** to group related conversations. **Project Instructions** provide context for conversations in that Project, while personal **System Instructions** apply to your browser chats. Personal instructions are available in the **Instructions** tab of Account Settings, alongside separate Email and Password tabs.
 

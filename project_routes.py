@@ -13,6 +13,7 @@ MAX_PROJECT_NAME_CHARS = 100
 MAX_PROJECT_INSTRUCTIONS_CHARS = 20000
 MAX_PROJECT_INSTRUCTIONS_BYTES = 60000
 MAX_SESSION_ID_CHARS = 128
+MEMORY_MODES = {"off", "project", "personal_project"}
 
 
 class ProjectInstructionsUnavailableError(RuntimeError):
@@ -83,6 +84,56 @@ def _normalize_session_id(value):
     return normalized
 
 
+def _normalize_memory_mode(value):
+    if not isinstance(value, str) or value not in MEMORY_MODES:
+        raise ValueError("Choose a valid Project Memory mode.")
+    return value
+
+
+def get_owned_project_memory_mode(user_id, project_id):
+    """Validate ownership before exposing Project Memory or its controls."""
+    user_id = _positive_int(user_id, "Project owner")
+    project_id = _positive_int(project_id, "Project")
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        row = conn.execute(
+            "SELECT memory_mode FROM projects WHERE id=? AND user_id=?",
+            (project_id, user_id),
+        ).fetchone()
+        if row is None:
+            raise LookupError("Project not found.")
+        return _normalize_memory_mode(row[0])
+    finally:
+        conn.close()
+
+
+def get_owned_session_project_id(user_id, session_id):
+    """Resolve Memory scope from an owned conversation; reject broken associations."""
+    user_id = _positive_int(user_id, "Project owner")
+    session_id = _normalize_session_id(session_id)
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        row = conn.execute(
+            """
+            SELECT metadata.project_id, owned_project.id
+              FROM chats AS owned_chat
+              LEFT JOIN chat_sessions AS metadata
+                ON metadata.user_id=owned_chat.user_id
+               AND metadata.session_id=owned_chat.session_id
+              LEFT JOIN projects AS owned_project
+                ON owned_project.id=metadata.project_id
+               AND owned_project.user_id=owned_chat.user_id
+             WHERE owned_chat.user_id=? AND owned_chat.session_id=?
+             LIMIT 1
+            """, (user_id, session_id),
+        ).fetchone()
+        if row is None or (row[0] is not None and row[1] is None):
+            raise ValueError("Owned conversation scope is unavailable")
+        return row[1]
+    finally:
+        conn.close()
+
+
 def get_session_project_instructions(user_id, session_id):
     """Return current owned Project Instructions for one conversation."""
     try:
@@ -133,6 +184,7 @@ def _project_payload(row):
         "id": row["id"],
         "name": row["name"],
         "instructions": row["instructions"],
+        "memory_mode": row["memory_mode"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
         "conversation_count": row["conversation_count"],
@@ -152,6 +204,7 @@ def list_projects():
             SELECT p.id,
                    p.name,
                    p.instructions,
+                   p.memory_mode,
                    p.created_at,
                    p.updated_at,
                    COUNT(cs.session_id) AS conversation_count
@@ -160,7 +213,7 @@ def list_projects():
                 ON cs.user_id=p.user_id
                AND cs.project_id=p.id
              WHERE p.user_id=?
-          GROUP BY p.id, p.name, p.instructions, p.created_at, p.updated_at
+          GROUP BY p.id, p.name, p.instructions, p.memory_mode, p.created_at, p.updated_at
           ORDER BY p.updated_at DESC, p.id DESC
             """,
             (user_id,),
@@ -185,6 +238,7 @@ def create_project():
     try:
         name = _normalize_project_name(data.get("name"))
         instructions = _normalize_project_instructions(data.get("instructions"))
+        memory_mode = _normalize_memory_mode(data.get("memory_mode", "project"))
     except ValueError as exc:
         return jsonify({"status": "error", "message": str(exc)}), 400
 
@@ -195,16 +249,16 @@ def create_project():
         conn.row_factory = sqlite3.Row
         cursor = conn.execute(
             """
-            INSERT INTO projects (user_id, name, instructions, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO projects (user_id, name, instructions, memory_mode, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (user_id, name, instructions, now, now),
+            (user_id, name, instructions, memory_mode, now, now),
         )
         project_id = cursor.lastrowid
         conn.commit()
         row = conn.execute(
             """
-            SELECT id, name, instructions, created_at, updated_at,
+            SELECT id, name, instructions, memory_mode, created_at, updated_at,
                    0 AS conversation_count
               FROM projects
              WHERE id=? AND user_id=?
@@ -231,6 +285,7 @@ def update_project():
         project_id = _positive_int(data.get("project_id"), "Project")
         name = _normalize_project_name(data.get("name"))
         instructions = _normalize_project_instructions(data.get("instructions"))
+        memory_mode = _normalize_memory_mode(data["memory_mode"]) if "memory_mode" in data else None
     except ValueError as exc:
         return jsonify({"status": "error", "message": str(exc)}), 400
 
@@ -248,10 +303,10 @@ def update_project():
         conn.execute(
             """
             UPDATE projects
-               SET name=?, instructions=?, updated_at=?
+               SET name=?, instructions=?, memory_mode=COALESCE(?, memory_mode), updated_at=?
              WHERE id=? AND user_id=?
             """,
-            (name, instructions, int(time.time()), project_id, user_id),
+            (name, instructions, memory_mode, int(time.time()), project_id, user_id),
         )
         conn.commit()
         row = conn.execute(
@@ -259,6 +314,7 @@ def update_project():
             SELECT p.id,
                    p.name,
                    p.instructions,
+                   p.memory_mode,
                    p.created_at,
                    p.updated_at,
                    COUNT(cs.session_id) AS conversation_count
@@ -267,7 +323,7 @@ def update_project():
                 ON cs.user_id=p.user_id
                AND cs.project_id=p.id
              WHERE p.id=? AND p.user_id=?
-          GROUP BY p.id, p.name, p.instructions, p.created_at, p.updated_at
+          GROUP BY p.id, p.name, p.instructions, p.memory_mode, p.created_at, p.updated_at
             """,
             (project_id, user_id),
         ).fetchone()
@@ -284,9 +340,44 @@ def update_project():
             conn.close()
 
 
+@project_routes.route("/<int:project_id>/memory", methods=["GET"])
+@login_required()
+def list_project_memory(project_id):
+    import memory_service
+
+    user_id = _current_user_id()
+    try:
+        mode = get_owned_project_memory_mode(user_id, project_id)
+    except LookupError:
+        return jsonify({"status": "error", "message": "Project not found."}), 404
+    except Exception as exc:
+        memory_service._log(f"Project Memory browser unavailable ({memory_service._exception_detail(exc)}).", "WARN")
+        return jsonify({"status": "success", "state": "unavailable", "items": []})
+    payload = memory_service.browse({"user_id": str(user_id), "agent_id": f"project-{project_id}"})
+    response = jsonify({"status": "success", "memory_mode": mode, **payload})
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@project_routes.route("/<int:project_id>/memory/manage", methods=["POST"])
+@login_required()
+def manage_project_memory(project_id):
+    import memory_service
+
+    # The application CSRFProtect covers this authenticated browser POST.
+    payload, status = memory_service.mutate(
+        _current_user_id(), request.get_json(silent=True), project_id=project_id,
+    )
+    response = jsonify(payload)
+    response.headers["Cache-Control"] = "no-store"
+    return response, status
+
+
 @project_routes.route("/delete", methods=["POST"])
 @login_required()
 def delete_project():
+    import memory_service
+
     user_id = _current_user_id()
     data = request.get_json(silent=True) or {}
     try:
@@ -296,34 +387,32 @@ def delete_project():
 
     conn = None
     try:
-        conn = sqlite3.connect(DB_PATH)
-        existing = conn.execute(
-            "SELECT id FROM projects WHERE id=? AND user_id=?",
-            (project_id, user_id),
-        ).fetchone()
-        if existing is None:
+        # Clear while ownership exists, and hold the Memory lock through commit
+        # so a queued capture cannot recreate the destroyed Project namespace.
+        try:
+            get_owned_project_memory_mode(user_id, project_id)
+        except LookupError:
             return jsonify({"status": "error", "message": "Project not found."}), 404
-
-        conn.execute(
-            """
-            UPDATE chat_sessions
-               SET project_id=NULL
-             WHERE user_id=? AND project_id=?
-            """,
-            (user_id, project_id),
-        )
-        conn.execute(
-            "DELETE FROM projects WHERE id=? AND user_id=?",
-            (project_id, user_id),
-        )
-        conn.commit()
+        with memory_service.project_deletion(user_id, project_id):
+            conn = sqlite3.connect(DB_PATH)
+            conn.execute(
+                """
+                UPDATE chat_sessions
+                   SET project_id=NULL
+                 WHERE user_id=? AND project_id=?
+                """,
+                (user_id, project_id),
+            )
+            conn.execute(
+                "DELETE FROM projects WHERE id=? AND user_id=?",
+                (project_id, user_id),
+            )
+            conn.commit()
         return jsonify({"status": "success", "project_id": project_id})
-    except sqlite3.Error:
+    except Exception as exc:
         if conn is not None:
             conn.rollback()
-        current_app.logger.exception(
-            "Could not delete Project %s for user %s", project_id, user_id
-        )
+        memory_service._log(f"Project deletion failed ({memory_service._exception_detail(exc)}); Project deletion not completed.", "WARN")
         return jsonify({"status": "error", "message": "Project could not be deleted."}), 500
     finally:
         if conn is not None:

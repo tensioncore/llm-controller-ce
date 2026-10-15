@@ -17,6 +17,9 @@ import model_routes
 api_routes = Blueprint("api_routes", __name__, url_prefix="/v1")
 MAX_API_REQUEST_BYTES = 16 * 1024 * 1024
 MAX_API_INLINE_IMAGE_BYTES = ((MAX_API_REQUEST_BYTES - 512 * 1024) * 3) // 4
+_MAX_API_TOOLS = 128
+_MAX_API_TOOL_NAME_CHARS = 256
+_ACTIVE_MODEL_ALIAS = "active"
 
 
 def _api_error(message, status, error_type="invalid_request_error", code=None):
@@ -72,6 +75,27 @@ def _active_model_id():
         return os.path.splitext(base)[0] or base
 
 
+def _advertised_model_id(canonical_id):
+    """Public id for the loaded model: its Friendly Name, else the loaded model name."""
+    runtime = model_routes.current_main_model_runtime or {}
+    if isinstance(runtime, dict):
+        # display_name is already Friendly Name, or the filename title when that name is empty.
+        label = str(runtime.get("display_name") or "").strip()
+        if label:
+            return label
+    return str(canonical_id or "").strip()
+
+
+def _model_request_allowed(requested_model, canonical_id, advertised_id):
+    if not requested_model or not canonical_id:
+        return False
+    return (
+        requested_model == advertised_id
+        or requested_model == canonical_id
+        or requested_model == _ACTIVE_MODEL_ALIAS
+    )
+
+
 def _configured_attachment_limits():
     defaults = {
         "llm.attachments.max_files": 8,
@@ -120,7 +144,68 @@ def _read_bounded_json_object():
     return data, None
 
 
-def _backend_payload(data, messages):
+def _bounded_function_name(value, label):
+    if not isinstance(value, str) or "\x00" in value or not value.strip() or len(value) > _MAX_API_TOOL_NAME_CHARS:
+        raise ValueError(
+            f"{label} must be a non-empty string of at most {_MAX_API_TOOL_NAME_CHARS} characters."
+        )
+    return value
+
+
+def _controlled_tool_fields(data):
+    """Validate OpenAI tool fields and return the forwarded payload plus its character cost."""
+    forwarded = {}
+    if "tools" in data:
+        tools = data.get("tools")
+        if not isinstance(tools, list) or not tools:
+            raise ValueError("tools must be a non-empty array of function definitions.")
+        if len(tools) > _MAX_API_TOOLS:
+            raise ValueError(f"tools may contain at most {_MAX_API_TOOLS} function definitions.")
+        forwarded_tools = []
+        for tool in tools:
+            if not isinstance(tool, dict) or tool.get("type") != "function":
+                raise ValueError("Only function tools are supported.")
+            function = tool.get("function")
+            if not isinstance(function, dict):
+                raise ValueError("Each function tool must include a function object.")
+            _bounded_function_name(function.get("name"), "Function tool name")
+            if "description" in function and not isinstance(function.get("description"), str):
+                raise ValueError("Function tool description must be a string.")
+            if isinstance(function.get("description"), str) and "\x00" in function.get("description"):
+                raise ValueError("Function tool description must not contain null characters.")
+            if "parameters" in function and not isinstance(function.get("parameters"), dict):
+                raise ValueError("Function tool parameters must be an object.")
+            forwarded_tools.append({"type": "function", "function": function})
+        forwarded["tools"] = forwarded_tools
+    if "tool_choice" in data:
+        choice = data.get("tool_choice")
+        if isinstance(choice, str):
+            if choice not in {"none", "auto", "required"}:
+                raise ValueError("tool_choice must be none, auto, required, or a function object.")
+            forwarded["tool_choice"] = choice
+        elif isinstance(choice, dict):
+            function = choice.get("function")
+            if choice.get("type") != "function" or not isinstance(function, dict):
+                raise ValueError("tool_choice must be none, auto, required, or a function object.")
+            name = _bounded_function_name(function.get("name"), "tool_choice function name")
+            forwarded["tool_choice"] = {"type": "function", "function": {"name": name}}
+        else:
+            raise ValueError("tool_choice must be none, auto, required, or a function object.")
+    if "parallel_tool_calls" in data:
+        parallel = data.get("parallel_tool_calls")
+        if not isinstance(parallel, bool):
+            raise ValueError("parallel_tool_calls must be true or false.")
+        forwarded["parallel_tool_calls"] = parallel
+    if not forwarded:
+        return {}, 0
+    try:
+        encoded = json.dumps(forwarded, separators=(",", ":"), ensure_ascii=False)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("tools must be JSON-serializable function definitions.") from exc
+    return forwarded, len(encoded)
+
+
+def _backend_payload(data, messages, forwarded_tools=None):
     stream = data.get("stream", False)
     if not isinstance(stream, bool):
         raise ValueError("stream must be true or false.")
@@ -158,6 +243,8 @@ def _backend_payload(data, messages):
             if value < minimum or value > maximum:
                 raise ValueError(f"{key} must be between {minimum} and {maximum}.")
         payload[key] = value
+    if forwarded_tools:
+        payload.update(forwarded_tools)
     return payload
 
 
@@ -236,9 +323,10 @@ def list_models():
             active_model=model_id,
         )
         return _api_error("No active model is loaded.", 503, "server_error", "model_not_loaded")
+    advertised_model = _advertised_model_id(model_id)
     _record_api_event(
         started_at,
-        model_id,
+        advertised_model,
         "completed",
         200,
         False,
@@ -246,7 +334,7 @@ def list_models():
     )
     return jsonify({
         "object": "list",
-        "data": [{"id": model_id, "object": "model", "owned_by": "llm-controller-ce"}],
+        "data": [{"id": advertised_model, "object": "model", "owned_by": "llm-controller-ce"}],
     })
 
 
@@ -305,7 +393,8 @@ def chat_completions():
             active_model=active_model,
         )
         return _api_error("model must identify the active model.", 400, code="model_required")
-    if requested_model != active_model:
+    advertised_model = _advertised_model_id(active_model)
+    if not _model_request_allowed(requested_model, active_model, advertised_model):
         _record_api_event(
             started_at,
             requested_model,
@@ -318,16 +407,19 @@ def chat_completions():
 
     try:
         max_images, max_image_bytes, max_total_image_bytes = _configured_attachment_limits()
+        forwarded_tools, tool_chars = _controlled_tool_fields(data)
         messages = normalize_openai_messages(
             data.get("messages"),
             max_total_chars=200000,
             max_image_bytes=max_image_bytes,
             max_images=max_images,
             max_total_image_bytes=max_total_image_bytes,
+            allow_tool_messages=True,
+            reserved_chars=tool_chars,
         )
         if messages_have_images(messages) and not bool((model_routes.current_main_model_runtime or {}).get("supports_images")):
             raise ValueError("The active model runtime is not configured for image understanding. Configure a compatible projector and restart the model.")
-        payload = _backend_payload(data, messages)
+        payload = _backend_payload(data, messages, forwarded_tools)
     except ValueError as exc:
         _record_api_event(
             started_at,
@@ -388,7 +480,7 @@ def chat_completions():
             return _api_error("The local model backend returned an invalid response.", 502, "server_error", "backend_invalid_response")
         finally:
             backend_response.close()
-        result["model"] = active_model
+        result["model"] = advertised_model
         _record_api_event(
             started_at,
             requested_model,
@@ -421,7 +513,7 @@ def chat_completions():
                         try:
                             chunk = json.loads(body)
                             if isinstance(chunk, dict):
-                                chunk["model"] = active_model
+                                chunk["model"] = advertised_model
                                 if isinstance(chunk.get("usage"), dict):
                                     usage = chunk.get("usage")
                                 line = "data: " + json.dumps(chunk, separators=(",", ":"))

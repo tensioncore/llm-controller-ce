@@ -2,8 +2,11 @@
 <html>
 <head>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32x32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon-16x16.png">
     <title>Admin: User Management</title>
     <link rel="stylesheet" href="/static/style.css">
+    <script src="/static/_dialogs.js" defer></script>
 </head>
 <body class="admin-users-page">
 <div class="admin-container">
@@ -70,7 +73,7 @@
                         <option value="retain" selected>Retain Chats</option>
                         <option value="purge">Purge Chats</option>
                     </select>
-                    <button class="user-action-btn delete-user-btn" type="submit" title="Delete user" onclick="return confirmDeleteUser(this.form)">🗑️</button>
+                    <button class="user-action-btn delete-user-btn" type="submit" title="Delete user">🗑️</button>
                 </form>
                 {% else %}
                     <span title="Admin cannot be deleted" class="admin-protected-value">—</span>
@@ -204,7 +207,7 @@ function copyTextToClipboard(text) {
   if (navigator.clipboard && window.isSecureContext) {
       return navigator.clipboard.writeText(text)
           .then(() => showCopied())
-          .catch(() => prompt("Copy this text:", text));
+          .catch(() => showSelectableTextDialog(text));
   } else {
       // Fallback for HTTP/old browsers
       const temp = document.createElement('textarea');
@@ -215,7 +218,7 @@ function copyTextToClipboard(text) {
           document.execCommand("copy");
           showCopied();
       } catch (e) {
-          prompt("Copy this text:", text);
+          showSelectableTextDialog(text);
       }
       document.body.removeChild(temp);
       return Promise.resolve();
@@ -238,13 +241,31 @@ function copyTextToClipboard(text) {
         }
     }
 
-    function confirmDeleteUser(form) {
+    async function confirmDeleteUser(form) {
+        if (form.dataset.submitting === 'true') return;
+        form.dataset.submitting = 'true';
         const select = form.querySelector('select[name="chat_action"]');
-        const action = (select && select.value === 'purge')
+        const chatAction = select.value;
+        const action = chatAction === 'purge'
             ? 'delete this user and purge their chats'
             : 'delete this user and retain their chats';
-        return confirm(`Are you sure you want to ${action}?`);
+        const accepted = await showDecisionDialog({ title: 'Delete user',
+            message: `Are you sure you want to ${action}?`, actionLabel: 'Delete User' });
+        if (!accepted) {
+            delete form.dataset.submitting;
+            return;
+        }
+        select.value = chatAction;
+        form.querySelector('button[type="submit"]').disabled = true;
+        HTMLFormElement.prototype.submit.call(form);
     }
+
+    document.querySelectorAll('.delete-user-form').forEach(form => {
+        form.addEventListener('submit', event => {
+            event.preventDefault();
+            confirmDeleteUser(form);
+        });
+    });
 
 
 </script>

@@ -136,10 +136,14 @@ def init_db():
             user_id INTEGER NOT NULL,
             name TEXT NOT NULL,
             instructions TEXT NULL,
+            memory_mode TEXT NOT NULL DEFAULT 'project' CHECK(memory_mode IN ('off', 'project', 'personal_project')),
             created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)),
             updated_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
         )
     ''')
+    c.execute("PRAGMA table_info(projects)")
+    if "memory_mode" not in {row[1] for row in c.fetchall()}:
+        c.execute("ALTER TABLE projects ADD COLUMN memory_mode TEXT NOT NULL DEFAULT 'project' CHECK(memory_mode IN ('off', 'project', 'personal_project'))")
     c.execute('CREATE INDEX IF NOT EXISTS idx_projects_user_updated ON projects(user_id, updated_at DESC, id DESC)')
     c.execute('''
         CREATE TABLE IF NOT EXISTS chat_sessions (
@@ -182,6 +186,62 @@ def init_db():
     c.execute('CREATE INDEX IF NOT EXISTS idx_request_events_user_time ON request_events(user_id, timestamp DESC, id DESC)')
     conn.commit()
     conn.close()
+
+
+def get_owned_prompt_memory_provenance(user_id, session_id, prompt_id):
+    """Resolve a persisted prompt's lineage without treating variant selection as an edit."""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        matches = conn.execute(
+            """
+            SELECT owned_prompt.turn_id, owned_prompt.prompt_version,
+                   source.prompt_id, source.prompt_version
+              FROM chats AS owned_prompt
+              LEFT JOIN chats AS source
+                ON source.id=owned_prompt.source_row_id
+               AND source.user_id=owned_prompt.user_id
+               AND source.session_id=owned_prompt.session_id
+               AND source.turn_id=owned_prompt.turn_id
+             WHERE owned_prompt.user_id=? AND owned_prompt.session_id=? AND owned_prompt.prompt_id=?
+             LIMIT 2
+            """, (user_id, session_id, prompt_id),
+        ).fetchall()
+        if not matches:
+            return None
+        if len(matches) != 1:
+            raise ValueError("Prompt Memory provenance is ambiguous")
+        row = matches[0]
+        if not row[0]:
+            return None
+        variants = conn.execute(
+            """
+            SELECT prompt_id, prompt_version FROM chats
+             WHERE user_id=? AND session_id=? AND turn_id=?
+            """, (user_id, session_id, row[0]),
+        ).fetchall()
+        # prompt_id has no uniqueness constraint. Refuse destructive matching if
+        # an older ID is also attached to another row in this owned conversation.
+        ambiguous = conn.execute(
+            """
+            SELECT 1 FROM chats AS prior
+              JOIN chats AS duplicate
+                ON duplicate.user_id=prior.user_id
+               AND duplicate.session_id=prior.session_id
+               AND duplicate.prompt_id=prior.prompt_id AND duplicate.id<>prior.id
+             WHERE prior.user_id=? AND prior.session_id=? AND prior.turn_id=?
+               AND prior.prompt_version<?
+             LIMIT 1
+            """, (user_id, session_id, row[0], row[1]),
+        ).fetchone()
+        if ambiguous:
+            raise ValueError("Prior prompt Memory provenance is ambiguous")
+        return {
+            "superseded": any(version > row[1] for _, version in variants),
+            "edited_source": row[2] if row[3] is not None and row[3] < row[1] else None,
+            "prior_prompt_ids": {pid for pid, version in variants if pid and version < row[1]},
+        }
+    finally:
+        conn.close()
 
 
 def _request_event_text(value, max_length=255):

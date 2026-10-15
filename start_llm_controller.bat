@@ -6,7 +6,7 @@ title LLM Controller CE
 cd /d "%~dp0"
 
 echo ==================================================
-echo   LLM Controller CE v1.4
+echo   LLM Controller CE v1.5
 echo ==================================================
 echo.
 echo Starting the application from:
@@ -21,13 +21,18 @@ echo         - Enable line wrapping selection
 echo         - Extended text selection keys
 echo.
 
-where python >nul 2>&1
-if errorlevel 1 (
-    echo ERROR: Python was not found on PATH.
-    echo Install Python and make sure the ^'python^' command is available, then try again.
-    echo.
-    pause
-    exit /b 1
+if exist "%~dp0venv\Scripts\python.exe" (
+    set "CE_PYTHON=%~dp0venv\Scripts\python.exe"
+) else (
+    where python >nul 2>&1
+    if errorlevel 1 (
+        echo ERROR: Python was not found on PATH.
+        echo Install Python and make sure the ^'python^' command is available, then try again.
+        echo.
+        pause
+        exit /b 1
+    )
+    set "CE_PYTHON=python"
 )
 
 if not exist "app.py" (
@@ -41,7 +46,7 @@ if not exist "app.py" (
 
 echo Launching: app.py
 echo.
-python app.py
+"%CE_PYTHON%" app.py
 set "APP_EXIT_CODE=%ERRORLEVEL%"
 
 if not "%APP_EXIT_CODE%"=="0" (

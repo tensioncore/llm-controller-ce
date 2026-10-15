@@ -630,12 +630,60 @@ def messages_have_images(messages):
     return False
 
 
+_MAX_TOOL_CALLS = 32
+_MAX_TOOL_CALL_ID_CHARS = 1024
+_MAX_TOOL_NAME_CHARS = 256
+
+
+def _bounded_tool_string(value, label, max_chars):
+    if not isinstance(value, str) or "\x00" in value:
+        raise ValueError(f"{label} must be a string of at most {max_chars} characters.")
+    if not value.strip():
+        raise ValueError(f"{label} must be a non-empty string of at most {max_chars} characters.")
+    if len(value) > max_chars:
+        raise ValueError(f"{label} must be a string of at most {max_chars} characters.")
+    return value
+
+
+def _normalized_tool_calls(raw_calls):
+    if not isinstance(raw_calls, list) or not raw_calls:
+        raise ValueError("tool_calls must be a non-empty array.")
+    if len(raw_calls) > _MAX_TOOL_CALLS:
+        raise ValueError(f"tool_calls may contain at most {_MAX_TOOL_CALLS} items.")
+    calls = []
+    for call in raw_calls:
+        if not isinstance(call, dict):
+            raise ValueError("Each tool call must be an object.")
+        call_id = _bounded_tool_string(call.get("id"), "Each tool call id", _MAX_TOOL_CALL_ID_CHARS)
+        if call.get("type") != "function":
+            raise ValueError("Only function tool calls are supported.")
+        function = call.get("function")
+        if not isinstance(function, dict):
+            raise ValueError("Each tool call must include a function object.")
+        name = _bounded_tool_string(
+            function.get("name"),
+            "Each tool call function name",
+            _MAX_TOOL_NAME_CHARS,
+        )
+        arguments = function.get("arguments")
+        if not isinstance(arguments, str) or "\x00" in arguments:
+            raise ValueError("Each tool call function arguments value must be a string.")
+        calls.append({
+            "id": call_id,
+            "type": "function",
+            "function": {"name": name, "arguments": arguments},
+        })
+    return calls
+
+
 def normalize_openai_messages(
     raw_messages,
     max_total_chars=200000,
     max_image_bytes=4 * 1024 * 1024,
     max_images=8,
     max_total_image_bytes=None,
+    allow_tool_messages=False,
+    reserved_chars=0,
 ):
     if not isinstance(raw_messages, list) or not raw_messages:
         raise ValueError("messages must be a non-empty array.")
@@ -646,22 +694,23 @@ def normalize_openai_messages(
     if max_total_image_bytes is None:
         max_total_image_bytes = max_image_bytes * max_images
     max_total_image_bytes = max(1, int(max_total_image_bytes))
+    try:
+        extra_chars = int(reserved_chars)
+    except (TypeError, ValueError):
+        extra_chars = 0
+    if extra_chars < 0:
+        extra_chars = 0
 
     normalized = []
     total_chars = 0
     image_count = 0
     total_image_bytes = 0
-    for message in raw_messages:
-        if not isinstance(message, dict):
-            raise ValueError("Each message must be an object.")
-        role = str(message.get("role") or "").strip().lower()
-        if role not in {"system", "user", "assistant"}:
-            raise ValueError("Only system, user, and assistant message roles are supported.")
-        content = message.get("content")
+
+    def _message_content(content):
+        nonlocal total_chars, image_count, total_image_bytes
         if isinstance(content, str):
             total_chars += len(content)
-            normalized.append({"role": role, "content": content})
-            continue
+            return content
         if not isinstance(content, list) or not content:
             raise ValueError("Message content must be text or an array of text/image parts.")
 
@@ -697,8 +746,65 @@ def normalize_openai_messages(
                 })
             else:
                 raise ValueError("Only text and image_url content parts are supported.")
-        normalized.append({"role": role, "content": parts})
+        return parts
 
-    if total_chars > max_total_chars:
+    for message in raw_messages:
+        if not isinstance(message, dict):
+            raise ValueError("Each message must be an object.")
+        role = str(message.get("role") or "").strip().lower()
+        if not allow_tool_messages:
+            if role not in {"system", "user", "assistant"}:
+                raise ValueError("Only system, user, and assistant message roles are supported.")
+            normalized.append({"role": role, "content": _message_content(message.get("content"))})
+            continue
+        if role not in {"system", "user", "assistant", "tool"}:
+            raise ValueError("Only system, user, assistant, and tool message roles are supported.")
+        if role != "assistant" and "tool_calls" in message:
+            raise ValueError("tool_calls are supported only on assistant messages.")
+
+        if role == "tool":
+            tool_call_id = _bounded_tool_string(
+                message.get("tool_call_id"),
+                "A tool message tool_call_id",
+                _MAX_TOOL_CALL_ID_CHARS,
+            )
+            item = {
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "content": _message_content(message.get("content")),
+            }
+            total_chars += len(tool_call_id)
+            if "name" in message and message.get("name") is not None:
+                name = _bounded_tool_string(message.get("name"), "A tool message name", _MAX_TOOL_NAME_CHARS)
+                item["name"] = name
+                total_chars += len(name)
+            normalized.append(item)
+            continue
+
+        tool_calls = None
+        if role == "assistant" and "tool_calls" in message:
+            tool_calls = _normalized_tool_calls(message.get("tool_calls"))
+        reasoning = None
+        if role == "assistant" and "reasoning_content" in message and message.get("reasoning_content") is not None:
+            reasoning = message.get("reasoning_content")
+            if not isinstance(reasoning, str) or "\x00" in reasoning:
+                raise ValueError("reasoning_content must be a string.")
+        content = None if "content" not in message else message.get("content")
+        if tool_calls and content is None:
+            normalized_content = None
+        else:
+            normalized_content = _message_content(content)
+        item = {"role": role, "content": normalized_content}
+        if tool_calls:
+            item["tool_calls"] = tool_calls
+            for call in tool_calls:
+                function = call["function"]
+                total_chars += len(call["id"]) + len(function["name"]) + len(function["arguments"])
+        if reasoning is not None:
+            item["reasoning_content"] = reasoning
+            total_chars += len(reasoning)
+        normalized.append(item)
+
+    if total_chars + extra_chars > max_total_chars:
         raise ValueError("The request content exceeds the safe context limit.")
     return normalized

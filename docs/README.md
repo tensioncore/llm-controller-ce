@@ -2,17 +2,19 @@
 
 [← Product overview](../README.md)
 
-Start with installation, then choose the guide for the job in front of you. These guides describe **CE v1.4**; use the documentation supplied with the version you install.
+Start with installation, then choose the guide for the job in front of you. These guides cover **CE v1.5**, with historical validation environments labeled separately. Existing installations should follow the [ordered upgrade procedure](../INSTALL.md#existing-installation-upgrades); use the documentation supplied with the version you install.
 
 | Guide | What you will find |
 | --- | --- |
-| [Install and upgrade CE](../INSTALL.md) | Prerequisites, first-run setup, Ubuntu service deployment, Windows runtime notes, and ordered upgrades. |
+| [Install and upgrade CE](../INSTALL.md) | Prerequisites, first-run setup, Ubuntu service deployment, and ordered upgrades. |
+| [Install CE on Windows](../WINDOWS_INSTALL.md) | Complete Windows setup, Python environment, MySQL, runtime deployment, CUDA/Ninja build, and troubleshooting. |
 | [Chat, Projects, and files](CHAT.md) | Conversations, instructions, reasoning display, attachments, supported formats, import, and export. |
 | [Models and runtime control](MODELS.md) | Local discovery, model selection, projectors, title generation, speech designation, and runtime settings. |
 | [Analytics and monitoring](MONITORING.md) | Usage, benchmarks, logs, memory, GPU telemetry, and how to interpret the results. |
 | [Connect through the API](API.md) | API keys, the two supported endpoints, request examples, streaming, and limitations. |
 | [Administration and data](ADMIN.md) | Accounts, administrative boundaries, settings, storage, and backup responsibilities. |
 | [Set up local voice](../VOICE_INSTALL.md) | Optional speech-to-text, the tested Windows/CUDA stack, microphone requirements, and troubleshooting. |
+| [Conversational Memory](MEMORY.md) | Manual setup, scope controls, Edit/Forget/Clear, local storage, validation, and deferred lifecycle work. |
 
 ## Before your first conversation
 

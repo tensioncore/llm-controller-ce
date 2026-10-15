@@ -19,6 +19,106 @@
     }
 
     let modelFilterRequest = 0;
+    let apiAnalyticsPage = 1;
+    let chatFetchSerial = 0;
+    let apiFetchSerial = 0;
+    let analyticsRequests = 0;
+    let analyticsTimer = null;
+    let analyticsDrawerObserver = null;
+    const ANALYTICS_REFRESH_MS = 12000;
+
+    function isAnalyticsDrawerOpen() {
+      const drawer = document.getElementById("analyticsDrawer");
+      return !!(drawer && drawer.classList.contains("open"));
+    }
+
+    function setAnalyticsRefreshBusy(busy) {
+      const button = document.getElementById("analyticsRefreshButton");
+      if (!button) return;
+      button.disabled = busy;
+      button.classList.toggle("is-refreshing", busy);
+      button.setAttribute("aria-busy", busy ? "true" : "false");
+    }
+
+    function clearAnalyticsTimer() {
+      if (!analyticsTimer) return;
+      clearTimeout(analyticsTimer);
+      analyticsTimer = null;
+    }
+
+    function scheduleAnalyticsRefresh() {
+      clearAnalyticsTimer();
+      if (!isAnalyticsDrawerOpen()) return;
+      analyticsTimer = setTimeout(() => {
+        analyticsTimer = null;
+        if (!isAnalyticsDrawerOpen()) return;
+        if (analyticsRequests > 0) {
+          scheduleAnalyticsRefresh();
+          return;
+        }
+        fetchAnalytics();
+      }, ANALYTICS_REFRESH_MS);
+    }
+
+    function trackAnalyticsRequest(promise) {
+      analyticsRequests += 1;
+      setAnalyticsRefreshBusy(true);
+      return Promise.resolve(promise).finally(() => {
+        analyticsRequests = Math.max(0, analyticsRequests - 1);
+        if (analyticsRequests === 0) setAnalyticsRefreshBusy(false);
+        if (analyticsRequests === 0 && isAnalyticsDrawerOpen()) scheduleAnalyticsRefresh();
+      });
+    }
+
+    function currentChatSort() {
+      const header = document.querySelector("#analyticsTable th[data-sort-active='true']");
+      if (!header || !header.parentElement) return null;
+      const headers = Array.from(header.parentElement.children);
+      const index = headers.indexOf(header);
+      if (index < 0) return null;
+      return {
+        index,
+        dir: header.getAttribute("data-sort-dir") === "asc" ? "asc" : "desc",
+        numeric: index !== 0 && index !== 2
+      };
+    }
+
+    function applyChatSort(sortState) {
+      if (!document.getElementById("analyticsTable") || typeof window.sortTable !== "function") return;
+      if (!sortState) {
+        window.sortTable("analyticsTable", 4, true, true);
+        return;
+      }
+      const header = document.querySelectorAll("#analyticsTable th")[sortState.index];
+      if (!header) {
+        window.sortTable("analyticsTable", 4, true, true);
+        return;
+      }
+      header.setAttribute("data-sort-dir", sortState.dir === "asc" ? "desc" : "asc");
+      window.sortTable("analyticsTable", sortState.index, sortState.numeric, false);
+    }
+
+    function restoreAnalyticsScroll(scroller, scrollTop) {
+      if (scroller) scroller.scrollTop = scrollTop;
+    }
+
+    function ensureAnalyticsDrawerObserver() {
+      if (analyticsDrawerObserver || typeof MutationObserver === "undefined") return;
+      const drawer = document.getElementById("analyticsDrawer");
+      if (!drawer) return;
+
+      analyticsDrawerObserver = new MutationObserver(() => {
+        if (!isAnalyticsDrawerOpen()) {
+          clearAnalyticsTimer();
+          return;
+        }
+        if (analyticsRequests === 0 && !analyticsTimer) fetchAnalytics();
+      });
+      analyticsDrawerObserver.observe(drawer, {
+        attributes: true,
+        attributeFilter: ["class"]
+      });
+    }
 
     async function applyEnabledModelFilter() {
       const toggle = document.getElementById("analyticsEnabledOnly");
@@ -63,10 +163,12 @@
       const prefix = (typeof window.ANALYTICS_PREFIX === "string"
         ? window.ANALYTICS_PREFIX
         : (typeof ANALYTICS_PREFIX === "string" ? ANALYTICS_PREFIX : "/analytics"));
-  
-        fetch(prefix, { cache: "no-store", credentials: "same-origin" })
+      const serial = ++chatFetchSerial;
+
+      return fetch(prefix, { cache: "no-store", credentials: "same-origin" })
         .then(response => response.json())
         .then(data => {
+          if (serial !== chatFetchSerial) return;
           data = data && typeof data === "object" ? data : {};
           let models = {};
   
@@ -153,13 +255,16 @@
           html = html.replace(totalTokensPlaceholder, overallTokens.toLocaleString());
   
           const dash = document.getElementById("analyticsDashboard");
+          const scroller = document.querySelector("#analyticsDrawer .analytics-content");
+          const scrollTop = scroller ? scroller.scrollTop : 0;
+          const previousSort = currentChatSort();
           if (dash) dash.innerHTML = html;
-  
-          if (document.getElementById("analyticsTable")) window.sortTable('analyticsTable', 4, true, true);
+          applyChatSort(previousSort);
+          restoreAnalyticsScroll(scroller, scrollTop);
           applyEnabledModelFilter();
-  
         })
         .catch(error => {
+          if (serial !== chatFetchSerial) return;
           console.error("Error fetching analytics:", error);
           const dash = document.getElementById("analyticsDashboard");
           if (dash) dash.innerHTML = "<p>Error loading analytics.</p>";
@@ -265,28 +370,46 @@
         html += `<button type="button" data-api-page="${page + 1}" ${page >= totalPages ? "disabled" : ""}>Next</button>`;
         html += `</nav>`;
       }
+      const scroller = document.querySelector("#analyticsDrawer .analytics-content");
+      const scrollTop = scroller ? scroller.scrollTop : 0;
       dashboard.innerHTML = html;
+      restoreAnalyticsScroll(scroller, scrollTop);
       dashboard.querySelectorAll("[data-api-page]").forEach(button => {
-        button.addEventListener("click", () => fetchApiAnalytics(Number(button.dataset.apiPage)));
+        button.addEventListener("click", () => {
+          clearAnalyticsTimer();
+          trackAnalyticsRequest(fetchApiAnalytics(Number(button.dataset.apiPage)));
+        });
       });
     }
 
-    function fetchApiAnalytics(page = 1) {
+    function fetchApiAnalytics(page = apiAnalyticsPage) {
       const prefix = (typeof window.ANALYTICS_PREFIX === "string"
         ? window.ANALYTICS_PREFIX
         : (typeof ANALYTICS_PREFIX === "string" ? ANALYTICS_PREFIX : "/analytics"));
       const dashboard = document.getElementById("apiAnalyticsDashboard");
-      if (!dashboard) return;
+      if (!dashboard) return Promise.resolve();
 
-      dashboard.innerHTML = "Loading API analytics...";
-      fetch(`${prefix}/api?page=${encodeURIComponent(page)}`, { cache: "no-store", credentials: "same-origin" })
+      const requestedPage = Math.max(1, Number(page) || apiAnalyticsPage || 1);
+      apiAnalyticsPage = requestedPage;
+      const serial = ++apiFetchSerial;
+      if (!dashboard.querySelector("table")) {
+        dashboard.innerHTML = "Loading API analytics...";
+      }
+
+      return fetch(`${prefix}/api?page=${encodeURIComponent(requestedPage)}`, { cache: "no-store", credentials: "same-origin" })
         .then(async response => {
           const data = await response.json().catch(() => ({}));
           if (!response.ok) throw new Error(data.message || data.error || `HTTP ${response.status}`);
           return data;
         })
-        .then(renderApiAnalytics)
+        .then(data => {
+          if (serial !== apiFetchSerial) return;
+          const resolvedPage = Number(data?.pagination?.page);
+          if (Number.isFinite(resolvedPage) && resolvedPage >= 1) apiAnalyticsPage = resolvedPage;
+          renderApiAnalytics(data);
+        })
         .catch(error => {
+          if (serial !== apiFetchSerial) return;
           console.error("Error fetching API analytics:", error);
           dashboard.innerHTML = "<p>Error loading API analytics.</p>";
         });
@@ -297,11 +420,8 @@
     }
 
     function fetchAnalytics() {
-      if (selectedAnalyticsTab() === "api") {
-        fetchApiAnalytics();
-      } else {
-        fetchChatAnalytics();
-      }
+      const request = selectedAnalyticsTab() === "api" ? fetchApiAnalytics() : fetchChatAnalytics();
+      return trackAnalyticsRequest(request);
     }
 
     function selectAnalyticsTab(name, focusTab = false) {
@@ -325,6 +445,11 @@
 
     function initializeAnalyticsTabs() {
       document.getElementById("analyticsEnabledOnly")?.addEventListener("change", applyEnabledModelFilter);
+      document.getElementById("analyticsRefreshButton")?.addEventListener("click", () => {
+        if (analyticsRequests > 0) return;
+        clearAnalyticsTimer();
+        fetchAnalytics();
+      });
       const tabs = Array.from(document.querySelectorAll("[data-analytics-tab]"));
       tabs.forEach((tab, index) => {
         tab.addEventListener("click", () => selectAnalyticsTab(tab.dataset.analyticsTab));
@@ -339,6 +464,7 @@
           selectAnalyticsTab(tabs[targetIndex].dataset.analyticsTab, true);
         });
       });
+      ensureAnalyticsDrawerObserver();
     }
 
     function prettifyModelName(name) {

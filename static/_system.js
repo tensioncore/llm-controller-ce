@@ -998,6 +998,10 @@
               <input type="checkbox" class="registry-speech-toggle" data-id="${id}" ${speech ? "checked" : ""}>
               <span>Speech-to-Text</span>
             </label>
+            <label class="registry-profile-toggle" title="Treat generated content as reasoning until the first &lt;/think&gt; delimiter, even without an opening &lt;think&gt; tag.">
+              <input type="checkbox" data-metadata-field="starts_in_thinking_mode" ${as01(row.starts_in_thinking_mode) ? "checked" : ""}>
+              <span>Starts in Thinking Mode</span>
+            </label>
             </div>
             <label class="registry-inline-field registry-friendly-name-field">
               <span>Friendly Name</span>
@@ -1112,7 +1116,8 @@
       id,
       friendly_name: friendlyName,
       notes,
-      mmproj_path: String(field("mmproj_path")?.value || "").trim()
+      mmproj_path: String(field("mmproj_path")?.value || "").trim(),
+      starts_in_thinking_mode: Boolean(field("starts_in_thinking_mode")?.checked)
     };
     REGISTRY_PROFILE_FIELDS.forEach(([name]) => {
       payload[name] = Boolean(field(name)?.checked);

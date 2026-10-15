@@ -55,7 +55,7 @@ body { background: #121212; color: #f2f2f2; font-family: 'Courier New', Courier,
 .chat-bubble.bot { background: #232740; color: #e2e6f2; margin-right: auto; margin-left: 16px; }
 .chat-bubble a { color: #73c5fd; text-decoration: underline; font-weight: 500; }
 .chat-bubble .footer { font-size: 0.91em; color: #a5adc2; text-align: right; margin-top: 7px; opacity: 0.77; }
-.chat-bubble .message-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+.chat-bubble .message-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 8px; }
 .chat-bubble .message-action-btn { background: #2a3247; color: #dbe7ff; border: 1px solid #384868; border-radius: 999px; padding: 5px 12px; font-size: 0.88em; cursor: pointer; transition: background 0.16s, border-color 0.16s, color 0.16s; }
 .chat-bubble .message-action-btn:hover { background: #33415f; border-color: #4a618e; color: #ffffff; }
 .chat-bubble .message-action-btn:disabled { opacity: 0.7; cursor: default; }
@@ -115,6 +115,18 @@ body { background: #121212; color: #f2f2f2; font-family: 'Courier New', Courier,
 .drawer-header button, .admin-drawer-header .drawer-close-btn { background: none; color: #f88383; border: none; font-size: 1.38em; cursor: pointer; margin-left: 12px; margin-right: 0; padding: 2px 12px; line-height: 1; transition: color 0.18s; }
 .drawer-header button:hover, .admin-drawer-header .drawer-close-btn:hover { color: #fff; }
 .drawer-header .drawer-close-btn, .admin-drawer-header .drawer-close-btn { flex: 0 0 auto; margin-left: auto; position: relative; z-index: 1; }
+#analyticsDrawer .drawer-header { flex-wrap: wrap; gap: 8px; }
+#analyticsDrawer .analytics-refresh-btn { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; margin-right: 0; padding: 7px 14px; border: 1.5px solid #466899; border-radius: 8px; background: #293449; color: #cfe5ff; font-size: 0.92em; font-weight: 600; line-height: 1.2; cursor: pointer; box-shadow: 0 2px 10px #0001; }
+#analyticsDrawer .analytics-refresh-btn:hover:not(:disabled), #analyticsDrawer .analytics-refresh-btn:focus-visible { background: #395b8d; border-color: #68a6ff; color: #fff; }
+#analyticsDrawer .analytics-refresh-btn:focus-visible { outline: 2px solid #94c8fd; outline-offset: 2px; }
+#analyticsDrawer .analytics-refresh-btn:disabled { opacity: 0.65; cursor: default; }
+#analyticsDrawer .drawer-header .drawer-close-btn { margin-left: 12px; }
+#analyticsDrawer .analytics-refresh-icon { display: inline-block; }
+#analyticsDrawer .analytics-refresh-btn.is-refreshing .analytics-refresh-icon { animation: analytics-refresh-spin 0.8s linear infinite; }
+@keyframes analytics-refresh-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  #analyticsDrawer .analytics-refresh-btn.is-refreshing .analytics-refresh-icon { animation: none; }
+}
 .model-drawer-grid, .analytics-content, .benchmarks-content, .admin-settings-panel, .gpu-stats-section, .drawer-scroll-content { flex: 1 1 auto; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; }
 .analytics-content { padding: 14px 20px 24px; color: #d7e0ee; font-size: 1.08em; overflow-x: hidden; }
 .analytics-content .refresh-notice { max-width: 1480px; margin: 0 auto 10px; padding: 0 2px; line-height: 1.45; }
@@ -255,21 +267,21 @@ hr { border: none; border-top: 1px solid #2b344e; margin: 16px 0; }
 #benchmarksDrawer .bench-results-view, #benchmarksDrawer .bench-details-view { width: 100%; max-width: 1600px; min-width: 0; margin: 0 auto; box-sizing: border-box; }
 #benchmarksDrawer .bench-results-view[hidden], #benchmarksDrawer .bench-details-view[hidden] { display: none !important; }
 #benchmarksDrawer .bench-runtime-panel { padding: 14px 16px; background: #1b202b; border: 1px solid #2c3850; border-radius: 8px; }
-#benchmarksDrawer .bench-runtime-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
-#benchmarksDrawer .bench-status-block { flex: 1 1 auto; min-width: 0; }
+#benchmarksDrawer .bench-runtime-top { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 20px; }
+#benchmarksDrawer .bench-status-block { flex: 1 1 240px; min-width: 0; }
 #benchmarksDrawer .bench-section-label { color: #92b8e7; font-size: 0.82em; font-weight: 700; margin-bottom: 7px; }
 #benchmarksDrawer .bench-status-primary { display: flex; align-items: baseline; gap: 10px; color: #9fb2cf; }
 #benchmarksDrawer .bench-status-primary strong { color: #eef5ff; font-size: 1.14em; }
 #benchmarksDrawer .bench-status-message { min-height: 1.25em; margin-top: 7px; color: #d8e5f7; overflow-wrap: anywhere; }
 #benchmarksDrawer .bench-status-meta { display: flex; flex-wrap: wrap; gap: 5px 18px; margin-top: 8px; color: #93a7c2; font-size: 0.88em; }
-#benchmarksDrawer .bench-controls-row { display: flex; flex: 0 0 auto; gap: 8px; flex-wrap: wrap; align-items: center; justify-content: flex-end; margin: 0; }
+#benchmarksDrawer .bench-controls-row { display: flex; flex: 1 1 580px; min-width: 0; gap: 8px; flex-wrap: wrap; align-items: center; justify-content: flex-end; margin: 0; }
 #benchmarksDrawer .bench-force-control { display: inline-flex; align-items: center; gap: 7px; min-height: 38px; color: #c2d1e6; white-space: nowrap; }
 #benchmarksDrawer .bench-controls-row button { min-height: 38px; margin: 0; padding: 8px 13px; border: 0; border-radius: 6px; color: #fff; font-family: inherit; font-size: 0.94em; font-weight: 600; cursor: pointer; }
 #benchmarksDrawer #benchRunBtn { background: #278553; }
 #benchmarksDrawer #benchRunBtn:hover { background: #319e65; }
 #benchmarksDrawer #benchStopBtn { background: #9a3838; }
 #benchmarksDrawer #benchStopBtn:hover { background: #b94747; }
-#benchmarksDrawer #benchRefreshBtn { background: #315f91; }
+#benchmarksDrawer #benchRefreshBtn, #benchmarksDrawer #benchManageBtn { background: #315f91; }
 #benchmarksDrawer #benchRefreshBtn:hover { background: #3d74ad; }
 #benchmarksDrawer .bench-controls-row button:disabled { opacity: 0.58; cursor: default; }
 #benchmarksDrawer .bench-progress-panel { margin-top: 14px; padding-top: 12px; border-top: 1px solid #2d394e; }
@@ -284,29 +296,46 @@ hr { border: none; border-top: 1px solid #2b344e; margin: 16px 0; }
 .collapsible-section > summary > span:first-child { display: inline-flex; align-items: center; min-width: 0; }
 .collapsible-section > summary > span:first-child::before { content: ""; width: 0; height: 0; margin-right: 9px; border-top: 5px solid transparent; border-bottom: 5px solid transparent; border-left: 7px solid #8fc2ff; transition: transform 0.15s; }
 .collapsible-section[open] > summary > span:first-child::before { transform: rotate(90deg); }
-#benchmarksDrawer .bench-prompt-count { color: #8fa9ca; font-size: 0.86em; font-weight: 500; white-space: nowrap; }
 #benchmarksDrawer .bench-prompt-editor { position: relative; overflow: hidden; margin: 0; padding: 14px; border: 1px solid #2c3850; border-top: 0; border-radius: 0 0 8px 8px; background: #171b24; box-shadow: none; }
-#benchmarksDrawer .bench-prompt-editor-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
-#benchmarksDrawer .bench-prompt-editor-head h3 { margin: 0; color: #a8ccfa; font-size: 1.02em; }
-#benchmarksDrawer .bench-prompt-editor-subtitle { max-width: 980px; margin-top: 4px; color: #9fb2cf; font-size: 0.9em; line-height: 1.4; }
 #benchmarksDrawer .bench-prompts-save-btn { background: #2d8fcb; color: #fff; border: none; border-radius: 6px; padding: 9px 14px; font-size: 0.94em; font-weight: 600; cursor: pointer; }
 #benchmarksDrawer .bench-prompts-save-btn:hover { background: #2578ab; }
 #benchmarksDrawer .bench-prompts-save-btn:disabled { opacity: 0.7; cursor: default; }
 #benchmarksDrawer .bench-prompt-editor-status { min-height: 1.3em; margin-bottom: 8px; color: #aac3e8; font-size: 0.92em; }
 #benchmarksDrawer .bench-prompt-editor-status.success { color: #7fe39f; }
 #benchmarksDrawer .bench-prompt-editor-status.error { color: #ff9a9a; }
-#benchmarksDrawer .bench-prompt-editor-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 16px; }
-#benchmarksDrawer .bench-prompt-editor-item { display: grid; gap: 6px; min-width: 0; }
-#benchmarksDrawer .bench-prompt-editor-label { color: #8fc2ff; font-weight: 600; font-size: 0.92em; }
-#benchmarksDrawer .bench-prompt-editor-input { width: 100%; min-height: 38px; padding: 9px 10px; border-radius: 6px; border: 1px solid #354257; background: #121720; color: #e5eeff; box-sizing: border-box; resize: vertical; font-size: 0.94em; line-height: 1.3; }
-#benchmarksDrawer .bench-prompt-editor-input:disabled { opacity: 0.72; cursor: default; }
-#benchmarksDrawer .bench-prompt-editor-empty { color: #9fb2cf; font-size: 0.94em; }
-#benchmarksDrawer .bench-prompt-editor.is-locked .bench-prompt-editor-head, #benchmarksDrawer .bench-prompt-editor.is-locked .bench-prompt-editor-status, #benchmarksDrawer .bench-prompt-editor.is-locked .bench-prompt-editor-list { opacity: 0.48; filter: grayscale(0.35); }
-#benchmarksDrawer .bench-prompt-editor-lock-overlay { position: absolute; inset: 0; z-index: 5; display: flex; align-items: center; justify-content: center; padding: 18px; text-align: center; background: rgba(13,17,25,0.78); border: 1px solid rgba(143,194,255,0.22); backdrop-filter: blur(1.5px); }
-#benchmarksDrawer .bench-prompt-editor-lock-overlay[hidden] { display: none; }
-#benchmarksDrawer .bench-prompt-editor-lock-message { max-width: 460px; padding: 14px 18px; border-radius: 8px; background: #141b27; border: 1px solid rgba(143,194,255,0.28); box-shadow: 0 12px 28px rgba(0,0,0,0.32); color: #e7f0ff; }
-#benchmarksDrawer .bench-prompt-editor-lock-message strong { display: block; margin-bottom: 6px; color: #a8ccfa; }
-#benchmarksDrawer .bench-prompt-editor-lock-message span { display: block; color: #c6d5ed; }
+#benchmarksDrawer .bench-suite-select { display: grid; gap: 4px; margin: 0; max-width: 310px; color: #a8ccfa; }
+#benchmarksDrawer .bench-suite-description { color: #9fb2cf; font-size: 0.9em; line-height: 1.4; margin: 8px 0; }
+#benchmarksDrawer .bench-suite-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 10px 0; }
+#benchmarksDrawer .bench-suite-toolbar label { display: grid; gap: 4px; min-width: 0; color: #a8ccfa; }
+#benchmarksDrawer .bench-suite-toolbar h4 { margin: 0 auto 0 0; }
+#benchmarksDrawer fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+#benchmarksDrawer fieldset:disabled { opacity: 0.65; }
+#benchmarksDrawer select, #benchmarksDrawer input[type="text"], #benchmarksDrawer input[type="number"], #benchmarksDrawer textarea { max-width: 100%; box-sizing: border-box; border: 1px solid #354257; border-radius: 5px; background: #121720; color: #e5eeff; padding: 7px 9px; }
+#benchmarksDrawer textarea { width: 100%; resize: vertical; }
+#benchmarksDrawer #benchSuiteFields > label { display: grid; gap: 5px; margin-bottom: 10px; color: #a8ccfa; }
+#benchmarksDrawer .bench-suite-prompts { max-height: 55dvh; overflow-y: auto; overscroll-behavior: contain; margin: 12px 0; }
+#benchmarksDrawer .bench-suite-prompt { padding: 10px; margin: 8px 0; border: 1px solid #354257; border-radius: 6px; }
+#benchmarksDrawer .bench-suite-prompt > summary { color: #a8ccfa; font-weight: 600; cursor: pointer; }
+#benchmarksDrawer .bench-tool-options { margin-top: 8px; }
+#benchmarksDrawer .bench-tool-options p { color: #9fb2cf; font-size: 0.9em; }
+#benchmarksDrawer .bench-suite-toolbar button, #benchmarksDrawer .bench-detail-toolbar button, #benchmarksDrawer #benchSuiteAddPrompt, #benchmarksDrawer #benchHistoryMore { border: 1px solid #45658f; border-radius: 5px; background: #27364d; color: #dceaff; padding: 7px 10px; cursor: pointer; }
+#benchmarksDrawer .bench-suite-toolbar .bench-archive-btn { background: #87373b; border-color: #87373b; }
+#benchmarksDrawer .bench-suite-toolbar .bench-prompts-save-btn { background: #278553; border-color: #278553; }
+#benchmarksDrawer button:disabled { opacity: 0.55; cursor: default; }
+#benchmarksDrawer .bench-detail-toolbar { flex-wrap: wrap; }
+#benchmarksDrawer .bench-detail-toolbar h3 { margin-right: auto; }
+#benchmarksDrawer .bench-history-disclosure { margin-top: 12px; }
+#benchmarksDrawer .bench-history-list { display: grid; gap: 6px; max-height: 35dvh; overflow-y: auto; padding: 10px 0; }
+#benchmarksDrawer .bench-history-entry { text-align: left; background: #202b3a; color: #cfe1f8; border: 1px solid #354963; border-radius: 5px; padding: 8px; cursor: pointer; }
+#benchmarksDrawer .bench-status-cell small { display: block; white-space: normal; margin-top: 4px; color: #aebfd5; font-size: 0.8em; }
+#benchmarksDrawer .bench-legacy-notice { color: #ffd38c; }
+#benchmarksDrawer .bench-prompt-card > details, #benchmarksDrawer .bench-run-summary > details { margin-top: 10px; }
+#benchmarksDrawer .bench-prompt-card > details > pre, #benchmarksDrawer .bench-run-summary > details > pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 40dvh; overflow-y: auto; background: #121720; padding: 10px; }
+@media (max-width: 700px) {
+  #benchmarksDrawer .bench-suite-select { max-width: 100%; width: 100%; }
+  #benchmarksDrawer .bench-suite-toolbar > label { width: 100%; }
+  #benchmarksDrawer .bench-detail-toolbar { gap: 8px; }
+}
 #benchmarksDrawer .bench-results-section { margin-top: 14px; }
 #benchmarksDrawer .bench-section-header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 0 2px 8px; }
 #benchmarksDrawer .bench-section-header h3 { margin: 0; color: #e4edfb; font-size: 1.05em; }
@@ -395,9 +424,7 @@ hr { border: none; border-top: 1px solid #2b344e; margin: 16px 0; }
   #benchmarksDrawer .bench-runtime-top { flex-direction: column; gap: 12px; }
   #benchmarksDrawer .bench-controls-row { width: 100%; justify-content: flex-start; }
   #benchmarksDrawer .bench-controls-row button { flex: 1 1 140px; }
-  #benchmarksDrawer .bench-prompt-editor-head { align-items: stretch; }
   #benchmarksDrawer .bench-prompts-save-btn { width: 100%; }
-  #benchmarksDrawer .bench-prompt-editor-list { grid-template-columns: minmax(0, 1fr); }
   #benchmarksDrawer .bench-table-wrap { max-height: 52dvh; }
   #benchmarksDrawer .bench-run-summary-grid { grid-template-columns: minmax(0, 1fr); }
   #benchmarksDrawer .bench-run-summary, #benchmarksDrawer .bench-prompt-card { scroll-margin-top: 160px; }
@@ -595,6 +622,34 @@ to { opacity: 1; transform: scale(1); }
 #userSettingsModal .account-email { margin: -8px 0 12px; overflow-wrap: anywhere; }
 #userSettingsModal .drawer-tab { flex: 1 1 0; padding: 6px 4px; font-size: .9em; }
 #userSettingsModal input { box-sizing: border-box; width: 100%; }
+#userSettingsModal .memory-toggle { display: flex; align-items: center; gap: 10px; }
+#userSettingsModal .memory-toggle input { width: auto; margin: 0; accent-color: #59b88b; }
+#projectEditorModal .drawer-tabs { padding: 0; margin-top: 14px; }
+#projectEditorModal [role="tabpanel"][hidden] { display: none; }
+.memory-browser-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; }
+.memory-browser-heading h4 { margin: 0; overflow-wrap: anywhere; }
+.memory-browser { margin-top: 10px; font-size: .94em; line-height: 1.4; }
+.memory-card-list { max-height: 300px; overflow-y: auto; }
+.memory-card { padding: 12px; margin-bottom: 8px; border: 1px solid #354052; border-radius: 7px; background: #181f29; overflow-wrap: anywhere; }
+.memory-card p { margin: 0 0 8px; white-space: pre-wrap; }
+.memory-card details { margin-top: 8px; color: #9eafc5; font-size: .88em; }
+.memory-card summary { cursor: pointer; }
+.memory-browser-navigation { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; }
+.memory-browser-navigation span { text-align: center; font-size: .88em; }
+.memory-browser-heading .user-action-btn, .memory-browser-navigation .user-action-btn { flex: 0 0 auto; width: auto; margin: 0; padding: 7px 10px; font-size: .9em; }
+.memory-browser button:disabled { opacity: .5; cursor: default; }
+.memory-card-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.memory-card-actions[hidden], .memory-browser-navigation[hidden] { display: none; }
+.memory-card-actions .user-action-btn, .memory-clear .user-action-btn { width: auto; margin: 0; padding: 7px 10px; font-size: .9em; }
+.memory-browser .memory-destructive { background: #572c32; color: #ffb7bd; }
+.memory-browser .memory-destructive:hover { background: #823d46; color: #fff; }
+.memory-browser .memory-save { background: #236747; color: #fff; }
+.memory-browser .memory-save:hover { background: #2e8059; }
+.memory-clear { border-top: 1px solid #354052; margin-top: 14px; padding-top: 12px; }
+.memory-clear .muted-note { margin-bottom: 0; }
+.memory-editor { margin-top: 10px; }
+.memory-action-error { color: #ff9b9b; }
+.memory-action-success { color: #86d4ac; }
 .user-close-btn { position: absolute; top: 11px; right: 13px; font-size: 1.35em; background: none; color: #e17c7c; border: none; cursor: pointer; transition: color 0.15s; }
 .user-close-btn:hover { color: #fff; }
 .project-modal-card input, .project-modal-card select { box-sizing: border-box; width: 100%; }
@@ -604,6 +659,15 @@ to { opacity: 1; transform: scale(1); }
 .user-modal-card .project-modal-actions button { min-height: 38px; margin: 0; }
 .project-modal-actions .user-action-btn { width: auto; }
 .project-assignment-card { max-width: 430px; }
+.ce-decision-overlay { z-index: 100000000; }
+.ce-dialog-message { white-space: pre-wrap; overflow-wrap: anywhere; }
+.ce-decision-overlay .ce-dialog-danger { background: #91383c; color: #ffe5e5; }
+.ce-decision-overlay .ce-dialog-danger:hover { background: #b13d43; }
+.ce-decision-overlay .ce-dialog-positive { background: #237b50; color: #fff; }
+.ce-decision-overlay .ce-dialog-positive:hover { background: #299660; }
+.ce-decision-overlay button:disabled { opacity: 0.6; cursor: default; }
+#projectEditorFields { border: 0; margin: 0; padding: 0; min-width: 0; }
+#projectEditorFields[hidden] { display: none; }
 .project-assignment-chat-name { margin: -7px 0 12px; color: #aabbd4; overflow-wrap: anywhere; }
 @media (max-width: 480px) {
   .user-modal-card.project-modal-card { padding: 24px 20px 18px; }

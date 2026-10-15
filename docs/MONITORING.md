@@ -30,15 +30,25 @@ Request tracking stores operational metadata—not prompts, responses, image con
 
 ## Benchmarks
 
-Administrators can run benchmarks across eligible models, edit the prompt set, inspect best-run summaries, and open the detailed saved outputs.
+Administrators run benchmarks from the existing Benchmark drawer. Choose a suite and profile beside **Run Benchmark**. Core Suite retains its five existing prompts, including operator customizations. The operator-seeded built-ins cover General Knowledge & Reasoning, Coding, Tool Calling, Writing & Summarization, and Performance Baseline.
 
 ![Benchmark results and controls](images/benchmark.png)
 
-Changing benchmark prompts can make earlier results stale. Use CE's current/stale distinction rather than presenting unlike runs as a directly comparable score.
+**Manage Suites** creates custom suites, duplicates any revision, and edits ordered prompts, categories, token limits, and optional tool request JSON. Saving an edit creates a new immutable revision; previous prompts and results stay linked. Core remains editable through revisions. Other built-ins are read-only: duplicate them to customize. Archive removes a custom suite from new runs while preserving history. Management is locked during benchmarks; stale edits produce a conflict instead of overwriting newer work.
 
-Benchmark eligibility is managed in the model library. Speech checkpoints and projector assets are not ordinary chat benchmark targets. Running a benchmark is a real workload: account for the host's available memory and other activity before starting one.
+Results are scoped to the selected **revision and profile**. Use **Results for revision** and **Model run history** to inspect older revisions, archived suites, and previous attempts. Force re-run retains the existing behavior: completed execution attempts, including failures, otherwise count as already benchmarked. The separate model **Reset** action still clears that model's entire benchmark history across suites.
 
-A useful comparison records the model, runtime build, prompt set, settings, and hardware. Faster throughput does not by itself demonstrate better answer quality.
+**Run passed** and **Request succeeded** describe execution, not answer quality. Completion is reported separately: answer completed, tool call returned, token limit, empty response, reasoning only, unknown, request/runtime failure, or cancellation. A normal completion does not verify factual accuracy. Token limits are capped by the selected profile; the effective limit and runtime settings appear in details.
+
+Tool Calling sends actual function definitions and validates returned names, JSON arguments, required fields, types, enums and numeric bounds. It never executes tools or fetches their results. With `tool_choice=auto`, a text answer without a tool call is allowed. Whether a call meets the prompt's intent remains manual review. Support depends on the installed llama-server build and model template; backend rejection is a request failure. CE does not force new launch flags. Custom parameter schemas support explicit object, array, string, integer, number, boolean and null types, plus properties, required, boolean additionalProperties, items, enum, minimum, maximum, description and title; unsupported schema keywords are rejected visibly.
+
+New token counts and generation/prompt-evaluation speeds use backend measurements when supplied. Missing values and nonstreaming TTFT are **Unavailable**. Request duration is measured locally and includes request overhead. Legacy request throughput and potentially estimated token counts remain readable in details but do not enter the new generation-speed ranking. Pre-migration runs lack frozen runtime settings and may reference prompts edited before migration; earlier overwritten text cannot be reconstructed.
+
+**Copy Result**, **Copy Model Run**, and JSON/CSV exports include prompts, captured responses, reasoning/tool calls, completion details, metrics, errors, and available configuration. A model run contains one model's prompts; there is no multi-model batch export. CSV contains one row per prompt, blanks for unavailable values, and quoted multiline text. Formula-like text cells receive a protective apostrophe; JSON and clipboard text preserve the original strings. Prompts without persisted results are identified explicitly. Advanced details remain collapsed within the existing details view.
+
+Benchmark eligibility stays in the model library. Speech checkpoints and projector assets are excluded. Running benchmarks stops the current main/title runtimes and cycles eligible models using the existing readiness and CPU fallback handling. Results depend on the host and workload; throughput is not an answer-quality score.
+
+**Operator prerequisite:** before using Benchmarking v2, stop CE and complete the applicable [v1.5 upgrades](../INSTALL.md#v14-to-v15-upgrade), then apply the separately reviewed Benchmarking v2 schema migration and built-in suite seeds manually. The supplied `*_DRAFT.sql` handoff files require operator finalization; the current repository SQL is not updated by this application change. Fresh-install schema/seed integration is also an operator task. Do not run the general fresh-install seed on an existing database. Start the matching application only after the schema and seeds are ready.
 
 ## Runtime logs
 

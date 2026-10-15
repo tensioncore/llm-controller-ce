@@ -290,6 +290,54 @@ def check_password_complexity(pw: str):
     return errors
 
 
+@settings_routes.route('/personal_memory', methods=['GET', 'POST'])
+@login_required()
+def personal_memory_preference():
+    import memory_service
+    from user_preferences import get_personal_memory_enabled, set_personal_memory_enabled
+
+    user_id = session['user_id']
+    if request.method == 'POST':
+        csrf_error = _validate_request_csrf()
+        if csrf_error:
+            return csrf_error
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict) or not isinstance(data.get('enabled'), bool):
+            return jsonify({"status": "error", "error": "Personal Memory must be enabled or disabled."}), 400
+        try:
+            enabled = set_personal_memory_enabled(user_id, data['enabled'])
+        except Exception as exc:
+            memory_service._log(f"Personal Memory preference save failed ({memory_service._exception_detail(exc)}).", "WARN")
+            return jsonify({"status": "error", "error": "Personal Memory preference could not be saved."}), 503
+        return jsonify({"status": "success", "enabled": enabled, "message": "Personal Memory preference saved."})
+    try:
+        enabled = get_personal_memory_enabled(user_id)
+    except Exception as exc:
+        memory_service._log(f"Personal Memory preference unavailable ({memory_service._exception_detail(exc)}).", "WARN")
+        payload = {"state": "unavailable", "items": [], "enabled": None}
+    else:
+        payload = {"enabled": enabled, **memory_service.browse({
+            "user_id": str(int(user_id)), "agent_id": "personal",
+        })}
+    response = jsonify({"status": "success", **payload})
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@settings_routes.route('/personal_memory/manage', methods=['POST'])
+@login_required()
+def manage_personal_memory():
+    import memory_service
+
+    csrf_error = _validate_request_csrf()
+    if csrf_error:
+        return csrf_error
+    payload, status = memory_service.mutate(session['user_id'], request.get_json(silent=True))
+    response = jsonify(payload)
+    response.headers['Cache-Control'] = 'no-store'
+    return response, status
+
+
 @settings_routes.route('/system_instructions', methods=['GET'])
 @login_required()
 def get_system_instructions_preference():
@@ -452,7 +500,7 @@ def validate_settings_payload(data):
         if raw_base_url and not normalize_auth_public_base_url(raw_base_url):
             errors["auth_public_base_url"] = "Must be a valid http(s) URL without username, password, query, or fragment"
 
-    for field in ("auth_smtp_enabled", "auth_smtp_use_tls", "api_enabled", "model_picker_show_friendly_names"):
+    for field in ("auth_smtp_enabled", "auth_smtp_use_tls", "api_enabled", "model_picker_show_friendly_names", "memory_enabled"):
         if field in data and str(data.get(field)).lower() not in ("true", "false", "1", "0", "on", "off"):
             errors[field] = "Must be true or false"
 
@@ -748,6 +796,7 @@ def get_settings():
         "attachments_chunk_overlap_lines": attachments_chunk_overlap_lines,
         "title_model_path": str(_get_db_setting("llm.title_model_path") or ""),
         "model_picker_show_friendly_names": get_setting("llm.model_picker.show_friendly_names", default=False, cast=bool),
+        "memory_enabled": get_setting("llm.memory.enabled", default=False, cast=bool),
         "api": _api_access_status(),
         "auth": {
             "email_confirmation_ready": auth_email_ready,
@@ -980,6 +1029,13 @@ def update_settings():
     set_setting("llm.attachments.chunk_overlap_lines", int(attachments_chunk_overlap_lines), "int", updated_by_user_id=uid)
     if "model_picker_show_friendly_names" in data:
         set_setting("llm.model_picker.show_friendly_names", data["model_picker_show_friendly_names"], "bool", updated_by_user_id=uid)
+    if "memory_enabled" in data:
+        memory_enabled = _parse_bool_payload(data["memory_enabled"])
+        set_setting("llm.memory.enabled", memory_enabled, "bool", updated_by_user_id=uid)
+        if memory_enabled:
+            from memory_service import schedule_initialization
+
+            schedule_initialization()
     if title_model_path_value is not None:
         set_setting("llm.title_model_path", title_model_path_value, "string", updated_by_user_id=uid)
     if api_enabled_value is not None:

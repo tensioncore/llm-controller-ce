@@ -12,6 +12,37 @@ class UserPreferencesUnavailableError(RuntimeError):
     """Controlled failure used when preference persistence is unavailable."""
 
 
+def get_personal_memory_enabled(user_id):
+    """Missing preference rows retain the original enabled Personal behavior."""
+    user_id = int(user_id)
+    if user_id < 1:
+        raise ValueError("Invalid user preference owner.")
+    try:
+        row = query_one(
+            "SELECT personal_memory_enabled FROM llm_user_preferences WHERE user_id=%s LIMIT 1",
+            (user_id,), dictionary=True,
+        )
+    except Exception as exc:
+        raise UserPreferencesUnavailableError("Personal Memory preference unavailable.") from exc
+    return bool(row["personal_memory_enabled"]) if row else True
+
+
+def set_personal_memory_enabled(user_id, enabled):
+    user_id = int(user_id)
+    if user_id < 1 or not isinstance(enabled, bool):
+        raise ValueError("Personal Memory must be enabled or disabled.")
+    mysql_exec(
+        """
+        INSERT INTO llm_user_preferences (user_id, personal_memory_enabled)
+        VALUES (%s, %s)
+        ON DUPLICATE KEY UPDATE
+          personal_memory_enabled=VALUES(personal_memory_enabled),
+          updated_at=CURRENT_TIMESTAMP
+        """, (user_id, int(enabled)),
+    )
+    return enabled
+
+
 def normalize_system_instructions(value):
     """Normalize a preference value for storage and model use."""
     if value is None:

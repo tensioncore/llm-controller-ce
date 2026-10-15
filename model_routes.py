@@ -543,7 +543,7 @@ def registry_list(include_disabled=True):
             is_enabled, is_favorite, allow_benchmark, is_projector, is_s2t, is_present,
             notes, profile_general, profile_coding, profile_writing,
             profile_reasoning, profile_math, profile_agents, profile_images,
-            mmproj_path
+            mmproj_path, starts_in_thinking_mode
         FROM llm_benchmark_models
         {where}
         ORDER BY is_favorite DESC, is_enabled DESC, model_name ASC
@@ -581,7 +581,7 @@ def _find_registry_model_by_path(model_path, enabled_present_only=False):
                 is_enabled, is_favorite, allow_benchmark, is_projector, is_s2t, is_present,
                 notes, profile_general, profile_coding, profile_writing,
                 profile_reasoning, profile_math, profile_agents, profile_images,
-                mmproj_path
+                mmproj_path, starts_in_thinking_mode
             FROM llm_benchmark_models
             {where}
         """)
@@ -1536,6 +1536,7 @@ def start_model():
         n_threads,
         cpu_only,
     )
+    current_main_model_runtime["starts_in_thinking_mode"] = bool(_as01((registry_model or {}).get("starts_in_thinking_mode")))
     current_main_model_runtime["supports_images"] = bool(projector_path)
     current_main_model_runtime["projector_configured"] = bool(projector_path)
     current_main_model_runtime["mmproj_filename"] = os.path.basename(projector_path) if projector_path else ""
@@ -2477,6 +2478,7 @@ def registry_list_route():
                 r["is_projector"] = _as01(r.get("is_projector"))
                 r["is_s2t"] = _as01(r.get("is_s2t"))
                 r["is_present"] = _as01(r.get("is_present"))
+                r["starts_in_thinking_mode"] = _as01(r.get("starts_in_thinking_mode"))
                 for field in MODEL_PROFILE_FIELDS:
                     r[field] = _as01(r.get(field))
                 r["friendly_name"] = str(r.get("friendly_name") or "")
@@ -2637,6 +2639,8 @@ def registry_metadata_route():
         missing_fields.append("notes")
     if "mmproj_path" not in data:
         missing_fields.append("mmproj_path")
+    if "starts_in_thinking_mode" not in data:
+        missing_fields.append("starts_in_thinking_mode")
     if missing_fields:
         return jsonify({
             "status": "error",
@@ -2652,6 +2656,10 @@ def registry_metadata_route():
                 "message": f"{field} must be true or false.",
             }), 400
         profile_values[field] = 1 if value else 0
+
+    starts_in_thinking_mode = data.get("starts_in_thinking_mode")
+    if not isinstance(starts_in_thinking_mode, bool):
+        return jsonify({"status": "error", "message": "starts_in_thinking_mode must be true or false."}), 400
 
     friendly_name_value = data.get("friendly_name")
     if not isinstance(friendly_name_value, str):
@@ -2695,6 +2703,7 @@ def registry_metadata_route():
             profile_values["profile_agents"],
             profile_values["profile_images"],
             mmproj_value or None,
+            int(starts_in_thinking_mode),
         )
         if model_id is not None:
             cur.execute("""
@@ -2708,7 +2717,8 @@ def registry_metadata_route():
                     profile_math=%s,
                     profile_agents=%s,
                     profile_images=%s,
-                    mmproj_path=%s
+                    mmproj_path=%s,
+                    starts_in_thinking_mode=%s
                 WHERE id=%s
             """, params + (model_id,))
         else:
@@ -2723,7 +2733,8 @@ def registry_metadata_route():
                     profile_math=%s,
                     profile_agents=%s,
                     profile_images=%s,
-                    mmproj_path=%s
+                    mmproj_path=%s,
+                    starts_in_thinking_mode=%s
                 WHERE fingerprint=%s
             """, params + (fingerprint,))
 
@@ -2746,6 +2757,7 @@ def registry_metadata_route():
             isinstance(current_main_model_runtime, dict)
             and _registry_path_key(updated_model_path) == _registry_path_key(current_main_model_used)
         ):
+            current_main_model_runtime["starts_in_thinking_mode"] = starts_in_thinking_mode
             current_main_model_runtime["display_name"] = _get_model_title(
                 updated_model_name or updated_model_path,
                 friendly_name_value,
@@ -2757,6 +2769,7 @@ def registry_metadata_route():
                 "notes": notes_value,
                 **{field: bool(profile_values[field]) for field in MODEL_PROFILE_FIELDS},
                 "mmproj_path": mmproj_value,
+                "starts_in_thinking_mode": starts_in_thinking_mode,
             },
         })
     except Exception as exc:
